@@ -3,8 +3,9 @@
   "type": "module",
   "version": "0.0.1",
   "scripts": {
-    "dev": "astro dev",
-    "build": "astro build",
+    "dev": "npm run build:wasm && astro dev",
+    "build": "npm run build:wasm && astro build",
+    "build:wasm": "wasm-pack build --target web --out-dir public/pkg --no-typescript src",
     "preview": "astro preview",
     "astro": "astro"
   },

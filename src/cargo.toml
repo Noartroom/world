@@ -5,6 +5,7 @@ edition = "2021"
 
 [lib]
 crate-type = ["cdylib"]
+path = "lib.rs"
 
 [dependencies]
 console_error_panic_hook = { version = "0.1.7", optional = true }
@@ -25,13 +26,16 @@ web-sys = { version = "0.3.82", features = [
 ]}
 
 # WebGPU/WGPU-Rendering
-wgpu = { version = "0.20.0", features = ["webgl"] } # Stabil und kompatibel mit web-sys 0.3.82
+wgpu = { version = "0.20.0", features = ["webgl", "spirv"] } # Stabil und kompatibel mit web-sys 0.3.82
+
+# Texture Compression
+ktx2 = "0.3.0"
 
 # 3D-Mathematik
 glam = { version = "0.28.0", features = ["bytemuck"] }
 
 # GLTF/GLB-Parsing
-gltf = "1.4.1" # TODO: change to gltf = { version = "1.1.0", features = ["images", "png", "jpeg"] }
+gltf = { version = "1.4.1", features = ["default", "import", "KHR_lights_punctual"] }
 anyhow = "1.0.86"
 
 # Lade-Utilities
