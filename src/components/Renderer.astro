@@ -173,23 +173,22 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
                             )`;
                        }
                        
-                       // 2. Update Global Vars (for Title Shadows, etc.)
-                       // Ensure we read the current mouse position from container style if available
-                       const lightX = container.style.getPropertyValue('--light-x') || '50%';
-                       const lightY = container.style.getPropertyValue('--light-y') || '50%';
-                       
-                       document.documentElement.style.setProperty('--light-x', lightX);
-                       document.documentElement.style.setProperty('--light-y', lightY);
+                       // 2. Update Global CSS Vars (for all HTML elements)
+                       // The light position is already set in pointermove handler in viewport units
+                       // Just ensure intensity is updated and class is set
                        document.documentElement.style.setProperty('--light-intensity', intensity.toFixed(2));
+                       
+                       // Add class to body for CSS selectors
+                       document.body.classList.add('light-engine-active');
                        
                    } else {
                         // Disabled State
                         if (overlay) {
                             overlay.style.opacity = '0';
                         }
-                        // We don't remove properties here to avoid "jumping" shadows, just zero intensity?
-                        // Or remove them to reset to default CSS fallback?
-                        // Let's keep positions but kill intensity for a smooth fade if transition used
+                        // Remove class from body
+                        document.body.classList.remove('light-engine-active');
+                        // Keep positions but zero intensity for smooth transitions
                         document.documentElement.style.setProperty('--light-intensity', '0');
                    }
                 }
@@ -225,13 +224,26 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
       }
 
       // 1.5 Dynamic Light Sync
+      // Initialize light position to center
+      document.documentElement.style.setProperty('--light-x', '50vw');
+      document.documentElement.style.setProperty('--light-y', '50vh');
+      document.documentElement.style.setProperty('--light-intensity', '0');
+      
       lightUnsub = onSet(isDynamicLightActive, ({ newValue }) => {
          if (!newValue && container) {
              const overlay = container.querySelector('.css-light-overlay');
              if (overlay) overlay.style.opacity = '0';
-             document.documentElement.style.removeProperty('--light-x');
-             document.documentElement.style.removeProperty('--light-y');
-             document.documentElement.style.removeProperty('--light-intensity');
+             document.body.classList.remove('light-engine-active');
+             // Keep CSS vars but zero intensity for smooth transitions
+             document.documentElement.style.setProperty('--light-intensity', '0');
+         } else if (newValue) {
+             // Ensure class is added when enabled and initialize position
+             document.body.classList.add('light-engine-active');
+             // Initialize to center if not already set
+             if (!document.documentElement.style.getPropertyValue('--light-x')) {
+               document.documentElement.style.setProperty('--light-x', '50vw');
+               document.documentElement.style.setProperty('--light-y', '50vh');
+             }
          }
       });
 
@@ -423,8 +435,15 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
         // Only update dynamic light position if enabled
         if (isDynamicLightActive.get()) {
             state.update(x, y, rect.width, rect.height);
+            // Store pixel values for container overlay
             container.style.setProperty('--light-x', `${e.clientX}px`);
             container.style.setProperty('--light-y', `${e.clientY}px`);
+            
+            // Also update global CSS vars in viewport units for HTML elements
+            const xPercent = (e.clientX / window.innerWidth) * 100;
+            const yPercent = (e.clientY / window.innerHeight) * 100;
+            document.documentElement.style.setProperty('--light-x', `${xPercent}vw`);
+            document.documentElement.style.setProperty('--light-y', `${yPercent}vh`);
         }
       }
     });

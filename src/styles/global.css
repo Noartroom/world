@@ -76,19 +76,55 @@ a:visited {
 }
 
 /* --- Dynamic Lighting Engine Styles --- */
-/* Merged from your 'global.css' file.
-*/
+/* Unified lighting system that affects both 3D canvas and HTML elements */
+
+/* Global light position variables (set by Renderer.astro) */
+:root {
+  --light-x: 50vw;
+  --light-y: 50vh;
+  --light-intensity: 0;
+}
+
+/* Body overlay for ambient light effect */
 body.light-engine-active::before {
   content: '';
   position: fixed;
   top: 0; left: 0;
   width: 100%; height: 100%;
   pointer-events: none;
-  z-index: 999; /* High z-index to be an overlay */
+  z-index: 1; /* Behind UI elements but above canvas */
   
   background: radial-gradient(
-    circle at var(--light-x) var(--light-y),
-    rgba(240, 233, 233, 0.20) 20%,
-    rgba(0, 0, 0, 0) 2%
+    circle 800px at var(--light-x, 50vw) var(--light-y, 50vh),
+    rgba(240, 233, 233, calc(0.15 * var(--light-intensity, 0))) 0%,
+    rgba(100, 150, 255, calc(0.10 * var(--light-intensity, 0))) 30%,
+    rgba(0, 0, 0, 0) 70%
   );
+  
+  transition: opacity 0.3s ease-out;
+  mix-blend-mode: screen;
+}
+
+/* Enhanced button lighting effects */
+body.light-engine-active button {
+  position: relative;
+  overflow: visible;
+}
+
+/* Make all interactive elements respond to light */
+body.light-engine-active .global-controls {
+  /* Only update the glow intensity, all other styles are already applied */
+  --panel-glow: calc(var(--light-intensity, 0) * 0.3);
+}
+
+/* Link lighting effects */
+body.light-engine-active a {
+  --light-dx: calc(var(--light-x, 50vw) - 50vw);
+  --light-dy: calc(var(--light-y, 50vh) - 50vh);
+  /* Simplified proximity: use intensity directly */
+  --light-proximity: var(--light-intensity, 0);
+  text-shadow: 
+    0 0 calc(5px * var(--light-intensity, 0) * var(--light-proximity)) rgba(100, 150, 255, calc(var(--light-intensity, 0) * var(--light-proximity) * 0.8)),
+    0 1px 2px rgba(0, 0, 0, 0.5);
+  transition: text-shadow 0.2s ease-out;
 }

@@ -69,19 +69,55 @@ import Renderer from '@/components/Renderer.astro';
     flex-direction: column;
     gap: 0.5rem;
     pointer-events: auto; /* Re-enable clicking */
+    /* Always apply base styling to prevent layout shifts */
+    border-radius: 8px;
+    padding: 0.5rem;
+    background: rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(20px);
+    /* Box shadow always present, intensity controlled by CSS var */
+    --panel-glow: 0;
+    box-shadow: 0 0 calc(30px * var(--panel-glow)) rgba(100, 150, 255, var(--panel-glow));
   }
   .global-toggle {
     padding: 0.5em 1em;
-    background: #444;
+    background: rgba(68, 68, 68, 0.8);
     color: white;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    transition: all 0.2s ease-out;
+    
+    /* Dynamic lighting effects - simplified calculations */
+    --light-dx: calc(var(--light-x, 50vw) - 50vw);
+    --light-dy: calc(var(--light-y, 50vh) - 50vh);
+    /* Simplified proximity: use intensity directly, proximity effect handled by intensity */
+    --light-proximity: var(--light-intensity, 0);
+    
+    /* Shadow offset - opposite direction from light */
+    --shadow-offset-x: calc(var(--light-dx) * -0.05);
+    --shadow-offset-y: calc(var(--light-dy) * -0.05);
+    --shadow-blur: calc(5px + (var(--light-intensity, 0) * 15px) + (var(--light-proximity) * 10px));
+    --glow-intensity: calc(var(--light-intensity, 0) * var(--light-proximity) * 0.5);
+    
+    box-shadow: 
+      var(--shadow-offset-x) var(--shadow-offset-y) var(--shadow-blur) rgba(0, 0, 0, 0.4),
+      0 0 calc(20px * var(--glow-intensity)) rgba(100, 150, 255, var(--glow-intensity)),
+      inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    
+    transform: translateZ(0); /* Enable 3D transforms */
+    will-change: box-shadow, transform;
   }
+  
   .global-toggle:hover {
-    background: #646cff;
+    background: rgba(100, 108, 255, 0.9);
+    transform: translateZ(5px) scale(1.05);
+    --glow-intensity: calc((var(--light-intensity, 0) * var(--light-proximity) * 0.8) + 0.3);
   }
+  
   .floating-title {
     position: absolute;
     top: 15%;
     left: 50%;
+    /* Simple, consistent transform - never changes */
     transform: translate(-50%, -50%);
     font-size: 6rem;
     font-weight: 900;
@@ -91,13 +127,31 @@ import Renderer from '@/components/Renderer.astro';
     text-transform: uppercase;
     letter-spacing: 0.5rem;
     
-    /* Dynamic Shadow based on light position */
-    --shadow-x: calc((var(--light-x, 50vw) - 50vw) * -0.1);
-    --shadow-y: calc((var(--light-y, 50vh) - 50vh) * -0.1);
-    --shadow-blur: calc(10px + (var(--light-intensity, 0) * 20px));
-    --shadow-color: rgba(0, 0, 0, 0.5);
+    /* Enhanced Dynamic Shadow based on light position */
+    --light-dx: calc(var(--light-x, 50vw) - 50vw);
+    --light-dy: calc(var(--light-y, 50vh) - 50vh);
+    /* Simplified proximity: use intensity directly for visual effect */
+    --light-proximity: var(--light-intensity, 0);
     
-    filter: drop-shadow(var(--shadow-x) var(--shadow-y) var(--shadow-blur) var(--shadow-color));
-    transition: filter 0.1s ease-out;
+    /* Shadow offset - opposite direction from light */
+    --shadow-x: calc(var(--light-dx) * -0.15);
+    --shadow-y: calc(var(--light-dy) * -0.15);
+    --shadow-blur: calc(15px + (var(--light-intensity, 0) * 25px) + (var(--light-proximity) * 15px));
+    --shadow-opacity: calc(0.3 + (var(--light-intensity, 0) * 0.4) + (var(--light-proximity) * 0.3));
+    
+    /* Glow effect when light is close */
+    --glow-intensity: calc(var(--light-intensity, 0) * var(--light-proximity) * 0.6);
+    --glow-color: rgba(100, 150, 255, var(--glow-intensity));
+    
+    /* Use text-shadow instead of filter drop-shadow to avoid layout shifts */
+    /* Base shadow always present */
+    text-shadow: 
+      0 0 20px rgba(0, 0, 0, 0.5),
+      var(--shadow-x) var(--shadow-y) var(--shadow-blur) rgba(0, 0, 0, var(--shadow-opacity)),
+      0 0 calc(30px * var(--glow-intensity)) var(--glow-color);
+    
+    /* Smooth transitions for visual effects only */
+    transition: text-shadow 0.1s ease-out;
+    will-change: text-shadow;
   }
 </style>
