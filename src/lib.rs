@@ -1,4 +1,5 @@
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsValue;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlCanvasElement, ImageBitmap, Blob, BlobPropertyBag, CanvasRenderingContext2d};
 use wgpu::util::DeviceExt;
@@ -326,6 +327,7 @@ pub struct State {
     light_pos_3d: Vec3,
     #[allow(dead_code)]
     light_pos_2d: Vec2,
+    is_dark_theme: bool, // Track theme for lighting
     
     // Model System
     // Model System
@@ -471,7 +473,7 @@ impl State {
                         view: &dest_view,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
                             store: wgpu::StoreOp::Store,
                         },
                     })],
@@ -513,8 +515,55 @@ impl State {
 impl State {
     #[wasm_bindgen(js_name = "setTheme")]
     pub fn set_theme(&mut self, is_dark: bool) {
+        self.is_dark_theme = is_dark;
         web_sys::console::log_1(&format!("Theme updated to: {}", if is_dark { "Dark" } else { "Light" }).into());
+        // Update lighting immediately based on theme
+        self.update_theme_lighting();
     }
+    
+    // Update lighting colors based on current theme and audio intensity
+    // Uses cursor-controlled light position (light_pos_3d)
+    fn update_theme_lighting(&mut self) {
+        // Get current audio intensity for subtle pulsing (0.0 to 1.0)
+        let audio_intensity = if self.audio_data.is_empty() {
+            0.0
+        } else {
+            let sum: u32 = self.audio_data.iter().map(|&x| x as u32).sum();
+            let avg = sum as f32 / self.audio_data.len() as f32;
+            (avg / 255.0).min(1.0)
+        };
+        
+        // Light intensity scales with audio (stronger when audio is louder)
+        let base_intensity = 1.0;
+        let audio_boost = 1.0 + audio_intensity * 0.5; // Up to 50% boost
+        let intensity_boost = base_intensity * audio_boost;
+        
+        // Use cursor-controlled light position (drag-controlled)
+        let light_pos = self.light_pos_3d;
+        
+        if self.is_dark_theme {
+            // Dark theme: Cool, subtle lighting (blue-white tones)
+            // Ambient: Very dark blue-gray with subtle audio pulsing
+            // Main light: Cool white with slight blue tint, audio-reactive intensity
+            let light_uniform = LightUniform {
+                position: [light_pos.x, light_pos.y, light_pos.z, 1.0],
+                color: [0.95 * intensity_boost, 0.97 * intensity_boost, 1.0 * intensity_boost, 1.0], // Cool white with audio boost
+                ambient_color: [0.02 + audio_intensity * 0.01, 0.02 + audio_intensity * 0.01, 0.03 + audio_intensity * 0.01, 1.0] // Subtle ambient pulse
+            };
+            self.queue.write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&[light_uniform]));
+        } else {
+            // Light theme: Warm, bright lighting (yellow-white tones)
+            // Ambient: Light warm gray with subtle audio pulsing
+            // Main light: Warm white with slight yellow tint, audio-reactive intensity
+            let light_uniform = LightUniform {
+                position: [light_pos.x, light_pos.y, light_pos.z, 1.0],
+                color: [1.0 * intensity_boost, 0.98 * intensity_boost, 0.95 * intensity_boost, 1.0], // Warm white with audio boost
+                ambient_color: [0.15 + audio_intensity * 0.05, 0.15 + audio_intensity * 0.05, 0.15 + audio_intensity * 0.05, 1.0] // Subtle ambient pulse
+            };
+            self.queue.write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&[light_uniform]));
+        }
+    }
+    
 
     #[wasm_bindgen(js_name = "loadModelFromBytes")]
     pub fn load_model_from_bytes(&mut self, bytes: &[u8]) {
@@ -761,19 +810,54 @@ impl State {
     }
 
     pub fn update(&mut self, mouse_x: f32, mouse_y: f32, screen_width: f32, screen_height: f32) {
-         // Update Light Position based on Mouse
+        // Update Light Position based on Mouse Drag
+        // Convert screen coordinates to 3D world space
         let x_pos = (mouse_x / screen_width - 0.5) * 20.0;
         let z_pos = (mouse_y / screen_height - 0.5) * 20.0;
         self.light_pos_3d = vec3(x_pos, 2.0, z_pos); 
-        let light_uniform = LightUniform { 
-            position: [self.light_pos_3d.x, self.light_pos_3d.y, self.light_pos_3d.z, 1.0], 
-            color: [1.0, 1.0, 1.0, 1.0], 
-            ambient_color: [0.03, 0.03, 0.03, 1.0] 
-        };
-        self.queue.write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&[light_uniform]));
+        // Update lighting with new position
+        self.update_theme_lighting();
+    }
+    
+    // Project 3D light position to 2D screen coordinates for CSS
+    #[wasm_bindgen(js_name = "getLightScreenPos")]
+    pub fn get_light_screen_pos(&self) -> Array {
+        // Get current camera matrices
+        let x = self.camera_radius * self.camera_polar.sin() * self.camera_azimuth.sin();
+        let y = self.camera_radius * self.camera_polar.cos();
+        let z = self.camera_radius * self.camera_polar.sin() * self.camera_azimuth.cos();
+        let cam_pos = vec3(x, y, z) + self.camera_target;
         
-        // Project light pos to 2D for effects (if needed)
-        // ... (Skipping complex unproject for now to save space, assuming light buffer is key)
+        let view = Mat4::look_at_rh(cam_pos, self.camera_target, Vec3::Y);
+        let proj = Mat4::perspective_rh(45.0_f32.to_radians(), self.config.width as f32 / self.config.height as f32, 0.1, 100.0);
+        let view_proj = proj * view;
+        
+        // Transform 3D light position to clip space
+        let light_world = vec4(self.light_pos_3d.x, self.light_pos_3d.y, self.light_pos_3d.z, 1.0);
+        let light_clip = view_proj * light_world;
+        
+        // Perspective divide to get NDC (Normalized Device Coordinates)
+        let w = light_clip.w;
+        if w.abs() < 0.0001 {
+            // Behind camera or at infinity, return center
+            let result = Array::new_with_length(2);
+            result.set(0, JsValue::from_f64(0.5));
+            result.set(1, JsValue::from_f64(0.5));
+            return result;
+        }
+        
+        let ndc_x = light_clip.x / w;
+        let ndc_y = light_clip.y / w;
+        
+        // Convert NDC to screen coordinates (0-1 range)
+        let screen_x = (ndc_x + 1.0) * 0.5;
+        let screen_y = 1.0 - (ndc_y + 1.0) * 0.5; // Flip Y axis
+        
+        // Return as JS array
+        let result = Array::new_with_length(2);
+        result.set(0, JsValue::from_f64(screen_x as f64));
+        result.set(1, JsValue::from_f64(screen_y as f64));
+        result
     }
 
     pub fn render(&mut self) {
@@ -811,19 +895,21 @@ impl State {
             }
         }
 
-        // 1. Calculate Audio Stats
-        let (avg_volume, balance) = if self.audio_data.is_empty() {
-            (0.0, 0.0)
+        // 1. Calculate Audio Stats (intensity only - no position changes)
+        let avg_volume = if self.audio_data.is_empty() {
+            0.0
         } else {
             let sum: u32 = self.audio_data.iter().map(|&x| x as u32).sum();
-            let avg = sum as f32 / self.audio_data.len() as f32;
-            (avg, 0.0)
+            sum as f32 / self.audio_data.len() as f32
         };
         let intensity = (avg_volume / 255.0).min(1.0);
 
-        // 2. Update Audio Uniform
-        let audio_uniform = AudioUniform { intensity, balance, _pad1: 0.0, _pad2: 0.0 };
+        // 2. Update Audio Uniform (balance kept at 0.0 - not used for lighting)
+        let audio_uniform = AudioUniform { intensity, balance: 0.0, _pad1: 0.0, _pad2: 0.0 };
         self.queue.write_buffer(&self.audio_buffer, 0, bytemuck::cast_slice(&[audio_uniform]));
+        
+        // 3. Update lighting with audio-reactive intensity (subtle pulsing only, no position changes)
+        self.update_theme_lighting();
 
         // 3. Draw
         let output = match self.surface.get_current_texture() {
@@ -852,7 +938,7 @@ impl State {
                     view: color_view,
                     resolve_target,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.02, g: 0.02, b: 0.05, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -886,9 +972,9 @@ impl State {
             // We need to inject Audio somewhere. Let's put Audio in Group 1 with Light? Or make Group 3?
             // "wasm_3d_w_adv" didn't seem to use Audio in shader code shown, but OUR current shader does.
             // Let's re-bind for Grid.
-            // Draw Sky (Background)
-            render_pass.set_pipeline(&self.sky_pipeline);
-            render_pass.draw(0..3, 0..1);
+            // Draw Sky (Background) - DISABLED for clean slate
+            // render_pass.set_pipeline(&self.sky_pipeline);
+            // render_pass.draw(0..3, 0..1);
 
             // Draw Grid (Audio Reactive)
             render_pass.set_pipeline(&self.grid_pipeline);
@@ -973,9 +1059,11 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
         .find(|&mode| mode == wgpu::PresentMode::Mailbox)
         .unwrap_or(wgpu::PresentMode::Fifo);
 
+    // Use PreMultiplied alpha mode for transparency support
     let alpha_mode = surface_caps.alpha_modes.iter()
         .copied()
-        .find(|&mode| mode == wgpu::CompositeAlphaMode::Opaque)
+        .find(|&mode| mode == wgpu::CompositeAlphaMode::PreMultiplied)
+        .or_else(|| surface_caps.alpha_modes.iter().copied().find(|&mode| mode == wgpu::CompositeAlphaMode::PostMultiplied))
         .unwrap_or(surface_caps.alpha_modes[0]);
 
     let width = canvas.width().max(1);
@@ -1027,8 +1115,12 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
     });
     let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { layout: &camera_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: camera_buffer.as_entire_binding() }], label: None });
 
-    // 2. Light
-    let light_uniform = LightUniform { position: [5.0, 5.0, 5.0, 1.0], color: [1.0, 1.0, 1.0, 1.0], ambient_color: [0.05, 0.05, 0.05, 1.0] };
+    // 2. Light - Theme-based lighting (defaults to dark theme)
+    let light_uniform = LightUniform { 
+        position: [5.0, 5.0, 5.0, 1.0], 
+        color: [0.95, 0.97, 1.0, 1.0], // Cool white for dark theme
+        ambient_color: [0.02, 0.02, 0.03, 1.0] // Dark ambient for dark theme
+    };
     let light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("Light Buffer"), contents: bytemuck::cast_slice(&[light_uniform]), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST });
     let light_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None }], label: Some("Light Layout")
@@ -1190,6 +1282,7 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
         camera_buffer, camera_bind_group, 
         camera_target: Vec3::ZERO, camera_radius: 10.0, camera_azimuth: 0.0, camera_polar: 1.57,
         light_buffer, light_bind_group, light_pos_3d: Vec3::ZERO, light_pos_2d: Vec2::ZERO,
+        is_dark_theme: true, // Default to dark theme
         model: None, material_layout, texture_cache: HashMap::new(), tx, rx
     })
 }

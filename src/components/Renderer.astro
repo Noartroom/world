@@ -17,7 +17,7 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
 <script type="module" define:vars={{ CANVAS_ID, modelPath }}>
   import init, { startRenderer } from '/pkg/model_renderer.js?v=gpu_fix_6';
   import { theme, activeModel, onSet, isDynamicLightActive } from '../src/stores/sceneStore.ts';
-  import { getAudioData, getStereoData } from '../src/stores/audioStore.ts';
+  import { getAudioData, getStereoData, getComprehensiveAudioAnalysis } from '../src/stores/audioStore.ts';
 
   // --- Global Scope (für Cleanup notwendig) ---
   let state = null;
@@ -103,35 +103,48 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
                 // avg is roughly 0-100, max 255.
                 const intensity = Math.min(avg / 80.0, 1.0); // Increased sensitivity
 
-                // Calculate Panning (Balance)
-                // -1.0 (Left) to 1.0 (Right)
-                // Avoid division by zero
-                const totalVol = (stereo.left + stereo.right) || 1;
-                const balance = (stereo.right - stereo.left) / totalVol;
-                
-                // Smooth panning to avoid jitter
-                const targetXPercent = 50 + (balance * 40); // +/- 40% from center
-                const currentXPercent = parseFloat(container.style.getPropertyValue('--light-x') || '50');
-                const newXPercent = currentXPercent + (targetXPercent - currentXPercent) * 0.1;
+                // Audio intensity is kept for visual effects only (no position changes)
+                // Light position is purely user-controlled via drag
 
-                if (!isDragging) {
-                    container.style.setProperty('--light-x', `${newXPercent}%`);
-                }
-
-                // Debug Output to Screen
+                // Enhanced Audio Analysis & Debug Output
                 const debugEl = document.getElementById('debug-overlay');
-                if (debugEl) {
-                    if (frameCount % 10 === 0) {
-                        debugEl.innerHTML = `
-                            Audio Signal Status:<br>
-                            Total Sum: ${sum}<br>
-                            Avg Volume: ${avg.toFixed(2)}<br>
+                if (debugEl && frameCount % 10 === 0) {
+                    // Get comprehensive audio analysis
+                    const audioAnalysis = getComprehensiveAudioAnalysis();
+                    const { frequencyBands, rmsEnergy, spatial, spectralCentroid, spectralRolloff, peakFrequency, zeroCrossingRate } = audioAnalysis;
+                    
+                    // Calculate balance for display
+                    const totalVol = (stereo.left + stereo.right) || 1;
+                    const balance = (stereo.right - stereo.left) / totalVol;
+                    
+                    debugEl.innerHTML = `
+                        <div style="font-size: 10px; line-height: 1.4;">
+                            <strong>AUDIO SIGNAL ANALYSIS</strong><br>
+                            <hr style="margin: 4px 0; border-color: #0f0;">
+                            <strong>Basic:</strong><br>
+                            Intensity: ${intensity.toFixed(3)} | Avg: ${avg.toFixed(1)}<br>
                             L: ${stereo.left.toFixed(1)} | R: ${stereo.right.toFixed(1)}<br>
-                            Balance: ${balance.toFixed(2)}<br>
-                            Intensity: ${intensity.toFixed(2)}
-                        `;
-                        debugEl.style.color = sum > 0 ? '#0f0' : '#f00';
-                    }
+                            Balance: ${balance.toFixed(3)}<br>
+                            <hr style="margin: 4px 0; border-color: #0f0;">
+                            <strong>Frequency Bands:</strong><br>
+                            Bass: ${frequencyBands.bass.toFixed(1)} | Mid: ${frequencyBands.mid.toFixed(1)} | Treble: ${frequencyBands.treble.toFixed(1)}<br>
+                            <strong>RMS Energy:</strong><br>
+                            B: ${rmsEnergy.bass.toFixed(3)} | M: ${rmsEnergy.mid.toFixed(3)} | T: ${rmsEnergy.treble.toFixed(3)}<br>
+                            <hr style="margin: 4px 0; border-color: #0f0;">
+                            <strong>Spectral:</strong><br>
+                            Centroid: ${spectralCentroid.toFixed(0)} Hz<br>
+                            Rolloff: ${spectralRolloff.toFixed(0)} Hz<br>
+                            Peak: ${peakFrequency.toFixed(0)} Hz<br>
+                            ZCR: ${zeroCrossingRate.toFixed(3)}<br>
+                            <hr style="margin: 4px 0; border-color: #0f0;">
+                            <strong>Spatial:</strong><br>
+                            Width: ${spatial.stereoWidth.toFixed(3)}<br>
+                            Phase: ${spatial.phaseDifference.toFixed(3)}<br>
+                            Separation: ${spatial.channelSeparation.toFixed(3)}<br>
+                            Azimuth: ${spatial.azimuth.toFixed(3)}
+                        </div>
+                    `;
+                    debugEl.style.color = sum > 0 ? '#0f0' : '#f00';
                     
                     if (sum > 0) {
                         const borderAlpha = 0.3 + (intensity * 0.7);
@@ -155,27 +168,55 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
                    const overlay = container.querySelector('.css-light-overlay');
                    
                    if (dynamicLightEnabled) {
-                       // 1. Update Overlay Visuals
+                       // 1. Update Overlay Visuals - Theme-based, no color shifting
                        if (overlay) {
-                            // Pulse opacity
-                            overlay.style.opacity = (0.2 + intensity * 0.8).toFixed(2);
+                            const currentTheme = theme.get();
+                            const isDark = currentTheme === 'dark';
                             
-                            // Extreme Color Shift: Blue -> Red
-                            const r = Math.floor(intensity * 255);
-                            const b = Math.floor((1.0 - intensity) * 255);
-                            const g = 0;
+                            // Pulse opacity based on audio intensity
+                            const baseOpacity = isDark ? 0.15 : 0.25;
+                            const pulseAmount = intensity * (isDark ? 0.4 : 0.3);
+                            overlay.style.opacity = (baseOpacity + pulseAmount).toFixed(2);
                             
+                            // Theme-based color temperature (no blue-red shift)
+                            // Dark theme: Cool white/blue tones
+                            // Light theme: Warm white/yellow tones
+                            let r, g, b;
+                            if (isDark) {
+                                // Cool white with slight blue tint
+                                r = 240;
+                                g = 245;
+                                b = 255;
+                            } else {
+                                // Warm white with slight yellow tint
+                                r = 255;
+                                g = 250;
+                                b = 240;
+                            }
+                            
+                            // Smooth radial gradient with theme-appropriate colors
                             overlay.style.background = `radial-gradient(
                                 circle 1000px at var(--light-x, 50%) var(--light-y, 50%),
-                                rgba(${r}, ${g}, ${b}, 0.7) 0%,
-                                rgba(${r}, ${g}, ${b}, 0.3) 30%,
+                                rgba(${r}, ${g}, ${b}, ${0.4 + intensity * 0.3}) 0%,
+                                rgba(${r}, ${g}, ${b}, ${0.2 + intensity * 0.2}) 30%,
                                 rgba(0, 0, 0, 0.0) 70%
                             )`;
                        }
                        
                        // 2. Update Global CSS Vars (for all HTML elements)
-                       // The light position is already set in pointermove handler in viewport units
-                       // Just ensure intensity is updated and class is set
+                       // Update light position from 3D to 2D projection
+                       if (state && state.getLightScreenPos) {
+                           const screenPos = state.getLightScreenPos();
+                           const screenX = screenPos[0];
+                           const screenY = screenPos[1];
+                           
+                           const xPercent = screenX * 100;
+                           const yPercent = screenY * 100;
+                           
+                           document.documentElement.style.setProperty('--light-x', `${xPercent}vw`);
+                           document.documentElement.style.setProperty('--light-y', `${yPercent}vh`);
+                       }
+                       
                        document.documentElement.style.setProperty('--light-intensity', intensity.toFixed(2));
                        
                        // Add class to body for CSS selectors
@@ -215,9 +256,10 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
       await init();
       state = await startRenderer(canvas);
       
-      // 1. Theme Sync
+      // 1. Theme Sync - Initialize lighting based on current theme
       if (theme) {
-        state.setTheme(theme.get() === 'dark');
+        const initialTheme = theme.get();
+        state.setTheme(initialTheme === 'dark');
         themeUnsub = onSet(theme, ({ newValue }) => {
             if (state) state.setTheme(newValue === 'dark');
         });
@@ -434,16 +476,35 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
         
         // Only update dynamic light position if enabled
         if (isDynamicLightActive.get()) {
+            // Update 3D light position based on mouse drag
             state.update(x, y, rect.width, rect.height);
-            // Store pixel values for container overlay
-            container.style.setProperty('--light-x', `${e.clientX}px`);
-            container.style.setProperty('--light-y', `${e.clientY}px`);
             
-            // Also update global CSS vars in viewport units for HTML elements
-            const xPercent = (e.clientX / window.innerWidth) * 100;
-            const yPercent = (e.clientY / window.innerHeight) * 100;
-            document.documentElement.style.setProperty('--light-x', `${xPercent}vw`);
-            document.documentElement.style.setProperty('--light-y', `${yPercent}vh`);
+            // Project 3D light position to 2D screen space for CSS
+            if (state.getLightScreenPos) {
+                const screenPos = state.getLightScreenPos();
+                const screenX = screenPos[0]; // 0-1 range
+                const screenY = screenPos[1]; // 0-1 range
+                
+                // Convert to viewport units for CSS
+                const xPercent = screenX * 100;
+                const yPercent = screenY * 100;
+                
+                // Update CSS variables for HTML elements
+                document.documentElement.style.setProperty('--light-x', `${xPercent}vw`);
+                document.documentElement.style.setProperty('--light-y', `${yPercent}vh`);
+                
+                // Also update container overlay (for backward compatibility)
+                container.style.setProperty('--light-x', `${screenX * window.innerWidth}px`);
+                container.style.setProperty('--light-y', `${screenY * window.innerHeight}px`);
+            } else {
+                // Fallback: use mouse position directly
+                const xPercent = (e.clientX / window.innerWidth) * 100;
+                const yPercent = (e.clientY / window.innerHeight) * 100;
+                document.documentElement.style.setProperty('--light-x', `${xPercent}vw`);
+                document.documentElement.style.setProperty('--light-y', `${yPercent}vh`);
+                container.style.setProperty('--light-x', `${e.clientX}px`);
+                container.style.setProperty('--light-y', `${e.clientY}px`);
+            }
         }
       }
     });
@@ -480,7 +541,7 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
   position: fixed;
   inset: 0;
   z-index: -1;
-  background: #050505;
+  background: transparent;
   cursor: grab;
   overflow: hidden;
   pointer-events: auto; /* clickable container for camera */

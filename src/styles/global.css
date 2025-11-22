@@ -85,7 +85,7 @@ a:visited {
   --light-intensity: 0;
 }
 
-/* Body overlay for ambient light effect */
+/* Body overlay for ambient light effect - Theme-aware */
 body.light-engine-active::before {
   content: '';
   position: fixed;
@@ -94,15 +94,26 @@ body.light-engine-active::before {
   pointer-events: none;
   z-index: 1; /* Behind UI elements but above canvas */
   
+  /* Default: Dark theme colors (cool white) */
   background: radial-gradient(
     circle 800px at var(--light-x, 50vw) var(--light-y, 50vh),
-    rgba(240, 233, 233, calc(0.15 * var(--light-intensity, 0))) 0%,
-    rgba(100, 150, 255, calc(0.10 * var(--light-intensity, 0))) 30%,
+    rgba(240, 245, 255, calc(0.15 * var(--light-intensity, 0))) 0%,
+    rgba(200, 220, 255, calc(0.10 * var(--light-intensity, 0))) 30%,
     rgba(0, 0, 0, 0) 70%
   );
   
-  transition: opacity 0.3s ease-out;
+  transition: opacity 0.3s ease-out, background 0.3s ease-out;
   mix-blend-mode: screen;
+}
+
+/* Light theme: Warm white tones */
+body.light-mode.light-engine-active::before {
+  background: radial-gradient(
+    circle 800px at var(--light-x, 50vw) var(--light-y, 50vh),
+    rgba(255, 250, 240, calc(0.20 * var(--light-intensity, 0))) 0%,
+    rgba(255, 240, 220, calc(0.12 * var(--light-intensity, 0))) 30%,
+    rgba(0, 0, 0, 0) 70%
+  );
 }
 
 /* Enhanced button lighting effects */
