@@ -258,18 +258,16 @@ fn fs_model(in: ModelOutput) -> @location(0) vec4<f32> {
     
     let NdotL = max(dot(N, L), 0.0);
     
-    // Light Color & Intensity (from Uniforms + Audio)
-    // Subtle audio-reactive intensity boost (no color shift)
-    let intensityBoost = 1.0 + audio.intensity * 0.5; // Reduced from 2.0 for subtlety
-    let lightColor = light.color.rgb * intensityBoost;
+    // Light Color & Intensity (from Uniforms only - no audio influence)
+    let lightColor = light.color.rgb;
     let radiance = lightColor; 
         
     let Lo = (kD * albedo / PI + specular) * radiance * NdotL;
 
     // Ambient / Emission
     let ambient = light.ambient_color.rgb * albedo * occlusion;
-    // Subtle emission that matches light color temperature (no blue tint)
-    let emission = light.color.rgb * audio.intensity * 0.1 * metallic; 
+    // No emission - pure PBR lighting only
+    let emission = vec3<f32>(0.0); 
 
     let color = ambient + Lo + emission;
     
