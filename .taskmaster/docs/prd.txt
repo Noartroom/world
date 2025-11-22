@@ -3,17 +3,27 @@ Project: Dreamworld — Adaptive Abstract (Flexible Spec)
 Core Directive:
 This plan serves as a conceptual blueprint. The specific technologies (e.g., Rust/WGPU) are placeholders. The priority is to integrate existing open-source solutions first. If a library exists that solves a problem, the architecture adapts to fit the library.
 
+*** AGENT OVERRIDE: CONTINUOUS REFINEMENT ***
+Do not stop at "functional." Once a feature is working, initiate a Refinement Loop:
+1. Critique: Analyze the implementation against SOTA benchmarks (e.g., Shadertoy top-tier, Awwwards SOTD).
+2. Optimize: Can this be moved from CPU to GPU (Compute Shaders)? Can allocations be reduced?
+3. Polish: Increase visual complexity (e.g., move from basic interpolation to spring physics, increase particle counts) until the Performance Guardrail (Section 6) is hit.
+
 1. The Vision
 A web experience that dissolves the boundary between a static 2D interface and an interactive 3D dream state. It is not a window to look through, but a space to enter.
+- Aesthetic Goal: "Ethereal Brutalism." High fidelity lighting mixed with abstract geometry.
+- Visual Quality: Target "Cinematic" post-processing (Bloom, Chromatic Aberration, Film Grain) as default, strictly managed by the Scalability Strategy.
 
 2. Flexible Architecture (The Search-First Stack)
 We aim for a hybrid performance stack, but specific components will be swapped based on available code assets.
 - UI Layer (Target: Astro): Handles DOM and View Transitions.
 - Engine Layer (Target: Rust/WGPU via WASM): High-performance rendering.
-  Search Focus: Look for existing WASM-ready renderers or "creative coding" crates to avoid writing raw WGPU boilerplate.
+  Search Focus: Look for existing WASM-ready renderers or "creative coding" crates (e.g., Nannou, Bevy options) to avoid writing raw WGPU boilerplate.
+  *Optimization Note: Prioritize engines that support "Zero-Copy" data transfer between CPU and GPU.*
 - Audio Layer (Target: IAMF): Spatial audio.
   Search Focus: Find libraries that already handle spatial metadata to drive visual parameters.
 - The Bridge (State): A central store that syncs 2D DOM with 3D Canvas.
+  *Implementation Note: Use SharedArrayBuffer or Ring Buffers for high-frequency data sync between threads (Audio/Render).*
 
 3. The "Immersive Axes" (Feature Goals)
 These are the effects we want to achieve. How we achieve them depends on the libraries we find.
@@ -24,21 +34,25 @@ Axis I: TIME (Scroll = Playback)
 - Tiered Effect:
   - Simple: Scrubbing audio/video.
   - Complex: Granular synthesis (audio fragmentation) on reverse scroll.
+  - SOTA Target: Non-linear time warping using Catmull-Rom splines to smooth scroll inputs, preventing "jittery" playback during fast scrolls.
 
 Axis II: AUDIO VISUALIZATION (The Artifact)
 - Goal: Sound manifests as a central, evolving 3D object.
 - Mechanism: Audio frequency data (bass/treble) deforms 3D geometry in real-time.
 - Search Focus: Look for open-source "audio reactive shaders" or "FFT visualizers" to adapt.
+- SOTA Target: Compute Shader FFT processing. Instead of just scaling geometry, map audio to SDF (Signed Distance Field) parameters for fluid, organic deformations.
 
 Axis III: PHYSICS (The "Breathing" World)
 - Goal: The environment reacts to music intensity and page navigation.
 - Mechanism:
   - Music: Heavy bass = Low Gravity (float state).
   - Navigation: Changing pages creates a "shockwave" that pushes objects away before the new content arrives.
+- Implementation Note: Prioritize ECS (Entity Component System) patterns in Rust to manage high object counts (10k+ particles) efficiently.
 
 Axis IV: UNIFIED LIGHTING
 - Goal: The 2D UI and 3D world feel like they share the same physical space.
 - Mechanism: The user's mouse acts as a light source that casts shadows from 2D HTML elements onto the 3D background.
+- SOTA Target: Screen Space Reflections (SSR) or Raymarching to allow the 3D world to "reflect" the colors of the 2D DOM elements.
 
 User Goals
 - Immersive Exploration: Users should feel they are entering a living digital space, not just viewing a static page.
@@ -50,12 +64,14 @@ Tech Stack
 - Frontend: Astro (UI Layer & View Transitions), TypeScript
 - Core Engine: Rust & WGPU (compiled to WASM)
 - Audio: IAMF (Spatial Audio)
-- Physics/Math: Rapier (WASM) or similar linear algebra crates
+- Physics/Math: Rapier (WASM) or similar linear algebra crates (glam/nalgebra).
+- Shaders: WGSL (WebGPU Shading Language). *Directive: Use Compute Shaders for all physics/particle simulations.*
 
 4. Scalability Strategy
 We do not build one scene for everyone. We build a scalable ladder:
-- Tier 1 (Mobile/Standard): Standard shading, simple playback.
+- Tier 1 (Mobile/Standard): Standard shading, simple playback. Cap at 30fps if needed to save battery.
 - Tier 2 (High-End): Compute shaders, raytraced shadows, granular audio synthesis.
+  *Action: Implement Dynamic Resolution Scaling (DPI scaling) that actively monitors frame time. If frame time < 14ms, increase resolution or particle count.*
 
 5. Current Roadmap (Search & Integrate)
 Phase 1: Foundation. Establish the loop between the browser (DOM) and the Canvas.
@@ -66,3 +82,10 @@ Phase 2: Connection. Connect Audio data to Visuals.
 
 Phase 3: Physics. Implement the "Shockwave" transition.
 - Action: Search for "Rapier physics WASM demos."
+
+6. Performance Guardrails (The "Somewhat Performant" Spec)
+While pushing for SOTA visuals, the agent must respect these limits:
+- Target FPS: 60fps on Reference Hardware (e.g., M1 Macbook Air equivalent).
+- Fallback FPS: 30fps minimum before degrading visuals (downgrading Tier).
+- Memory Cap: Monitor WASM heap growth. Ensure strict cleanup/dropping of Rust structs to prevent memory leaks in the browser.
+- Latency: Input-to-Visual latency must be < 50ms (Scroll physics must feel instant).

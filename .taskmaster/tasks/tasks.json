@@ -7,7 +7,7 @@
         "description": "Establish the communication loop between the browser (DOM/Astro) and the Rust/WGPU engine.",
         "details": "Initialize or verify the Rust WASM project structure. Ensure the build pipeline (wasm-pack) is correctly set up. Create a basic 'hello world' invocation from the Astro frontend to the Rust backend to verify the bridge.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": []
@@ -16,18 +16,44 @@
         "id": 2,
         "title": "Phase 1: Foundation - Implement Basic WGPU Renderer",
         "description": "Create a basic render loop in Rust/WGPU targeting a Canvas in Astro.",
-        "details": "Search for 'WASM render loop templates' or existing wgpu-on-web examples. Implement a basic WGPU surface configuration and render loop (e.g., clearing the screen to a specific color) that runs in the browser canvas.",
-        "testStrategy": "",
-        "status": "pending",
+        "details": "Search for 'WASM render loop templates' or existing wgpu-on-web examples. Implement a basic WGPU surface configuration and render loop (e.g., clearing the screen to a specific color) that runs in the browser canvas.\n\n**Refinement Loop:**\n1. Critique: Analyze implementation against SOTA benchmarks.\n2. Optimize: Check for GPU compute opportunities and zero-copy data transfer.\n3. Polish: Increase visual complexity until performance guardrails are hit.\n\n**Performance Guardrails:**\n- Target 60fps on Reference Hardware (M1 Air).\n- Monitor WASM heap growth and cleanup.",
+        "testStrategy": "Verify canvas renders background color and maintains target FPS.",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 3,
+        "title": "Phase 2: Connection - Connect Audio Data to Visuals",
+        "description": "Connect Audio data to Visuals using IAMF or WebAudio API.",
+        "details": "Search for 'WebAudio API analyzer examples' or 'Rust DSP crates'. Implement real-time audio frequency data extraction and pass it to the visualizer.\n\n**Refinement Loop:**\n1. Critique: Analyze latency and responsiveness.\n2. Optimize: Use SharedArrayBuffer/Ring Buffers for data sync.\n3. Polish: Map audio to SDF parameters for fluid deformations.\n\n**Performance Guardrails:**\n- Input-to-Visual latency < 50ms.",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [
+          "2"
+        ],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 4,
+        "title": "Phase 3: Physics - Implement Shockwave Transition",
+        "description": "Implement the 'Shockwave' transition using Rapier or similar.",
+        "details": "Search for 'Rapier physics WASM demos'. Implement navigation shockwave effect pushing objects away.\n\n**Refinement Loop:**\n1. Critique: Evaluate physics realism and 'feel'.\n2. Optimize: Use ECS for high object counts (10k+).\n3. Polish: Add spring physics and increased particle counts.\n\n**Performance Guardrails:**\n- Maintain 30fps minimum before downgrading Tier.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "3"
+        ],
+        "priority": "medium",
         "subtasks": []
       }
     ],
     "metadata": {
       "created": "2025-11-21T19:43:27.080Z",
-      "description": "Default tasks context",
-      "updated": "2025-11-21T20:32:53.915Z"
+      "description": "Updated tasks based on PRD",
+      "updated": "2025-11-21T23:09:26.136Z"
     }
   }
 }

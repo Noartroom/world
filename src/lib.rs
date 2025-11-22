@@ -12,6 +12,7 @@ pub struct State {
     config: wgpu::SurfaceConfiguration,
     depth_texture: wgpu::Texture,
     depth_view: wgpu::TextureView,
+    audio_data: Vec<u8>,
 }
 
 impl State {
@@ -51,6 +52,17 @@ impl State {
         // Future: Parse GLTF/GLB here
     }
 
+    #[wasm_bindgen(js_name = "updateAudioData")]
+    pub fn update_audio_data(&mut self, data: &[u8]) {
+        // Copy data to internal buffer
+        if self.audio_data.len() != data.len() {
+            self.audio_data = data.to_vec();
+        } else {
+            self.audio_data.copy_from_slice(data);
+        }
+        // Future: Update uniform buffer with audio data for shaders
+    }
+
     pub fn resize(&mut self, width: u32, height: u32) {
         if width > 0 && height > 0 {
             self.config.width = width;
@@ -73,6 +85,17 @@ impl State {
     }
 
     pub fn render(&mut self) {
+        // Calculate average volume for visualization
+        let avg_volume = if self.audio_data.is_empty() {
+            0.0
+        } else {
+            let sum: u32 = self.audio_data.iter().map(|&x| x as u32).sum();
+            sum as f64 / self.audio_data.len() as f64
+        };
+
+        // Map 0-255 to 0.0-0.8 for blue channel modulation
+        let modulation = (avg_volume / 255.0).min(1.0);
+
         let output = match self.surface.get_current_texture() {
             Ok(output) => output,
             Err(wgpu::SurfaceError::Lost) => {
@@ -128,7 +151,7 @@ impl State {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: 0.1,
                             g: 0.1,
-                            b: 0.15, // Dark blue-ish background
+                            b: 0.15 + (modulation * 0.5), // Pulse blue with audio
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -214,5 +237,6 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
         config,
         depth_texture,
         depth_view,
+        audio_data: Vec::new(),
     })
 }

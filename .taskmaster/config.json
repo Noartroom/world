@@ -7,9 +7,9 @@
       "temperature": 0.2
     },
     "research": {
-      "provider": "gemini-cli",
-      "modelId": "gemini-3-pro-preview",
-      "maxTokens": 65536,
+      "provider": "anthropic",
+      "modelId": "claude-sonnet-4-20250514",
+      "maxTokens": 64000,
       "temperature": 0.1
     },
     "fallback": {

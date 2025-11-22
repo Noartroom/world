@@ -6,6 +6,9 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
 
 <div class="renderer-container" aria-label="Interactive 3D Model Viewer" role="application">
   <div id="loader" class="loader">INITIALIZING GPU...</div>
+  <div id="debug-overlay" style="position: absolute; top: 10px; left: 10px; color: #0f0; background: rgba(0,0,0,0.7); padding: 10px; pointer-events: none; font-family: monospace; z-index: 9999;">
+      Waiting for audio data...
+  </div>
   
   <canvas id={CANVAS_ID} tabindex="0" aria-label="3D Canvas"></canvas>
   <div class="css-light-overlay"></div>
@@ -14,14 +17,22 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
 <script type="module" define:vars={{ CANVAS_ID, modelPath }}>
   import init, { startRenderer } from '/pkg/model_renderer.js';
   import { theme, onSet } from '../src/stores/sceneStore.ts';
+  import { getAudioData, getStereoData } from '../src/stores/audioStore.ts';
 
   // --- Global Scope (für Cleanup notwendig) ---
   let state = null;
   let rafId = null;
   let resizeObserver = null;
   let intersectionObserver = null;
-  let isVisible = true; 
-  let themeUnsub = null; 
+  let isVisible = true;
+  let themeUnsub = null;
+
+  // Performance Monitoring (SOTA Guardrails)
+  let lastFrameTime = performance.now();
+  let frameTimer = 0;
+  let frameCount = 0;
+  let currentDpr = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
+  let targetDpr = currentDpr;
 
   // DOM Elemente
   const canvas = document.getElementById(CANVAS_ID);
@@ -34,7 +45,7 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
   let lastY = 0;
 
   // --- SOTA Render Loop ---
-  function renderLoop() {
+  function renderLoop(timestamp) {
     // 0. Safety: Stoppen, wenn Canvas nicht mehr im DOM ist (Astro View Transition)
     if (!canvas.isConnected) {
         cleanup();
@@ -47,8 +58,118 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
       return;
     }
 
+    // 2. Performance Guardrails: Monitor Frame Time
+    const delta = timestamp - lastFrameTime;
+    lastFrameTime = timestamp;
+    
+    // Einfacher FPS Counter über 1 Sekunde
+    frameTimer += delta;
+    frameCount++;
+    
+    if (frameTimer >= 1000) {
+      const fps = frameCount;
+      // console.log(`FPS: ${fps}, DPR: ${currentDpr.toFixed(2)}`);
+      
+      // Dynamic Resolution Scaling (Tiered)
+      // Wenn FPS unter 45 fallen, reduziere Auflösung (min 0.5)
+      if (fps < 45 && currentDpr > 0.5) {
+         targetDpr = Math.max(0.5, currentDpr - 0.25);
+         triggerResize(); // Trigger resize with new DPR
+      }
+      // Wenn FPS stabil bei 60 sind, versuche Qualität zu erhöhen (bis native DPR)
+      else if (fps >= 58 && currentDpr < (window.devicePixelRatio || 1)) {
+         targetDpr = Math.min(window.devicePixelRatio || 1, currentDpr + 0.1);
+         triggerResize();
+      }
+      
+      frameTimer = 0;
+      frameCount = 0;
+    }
+
     if (state) {
       try {
+        // Pass audio data to WASM
+        try {
+            const audioData = getAudioData();
+            const stereo = getStereoData();
+
+            if (audioData && audioData.length > 0 && audioData instanceof Uint8Array) {
+                const sum = audioData.reduce((a, b) => a + b, 0);
+                const avg = sum / audioData.length;
+                
+                // avg is roughly 0-100, max 255.
+                const intensity = Math.min(avg / 80.0, 1.0); // Increased sensitivity
+
+                // Calculate Panning (Balance)
+                // -1.0 (Left) to 1.0 (Right)
+                // Avoid division by zero
+                const totalVol = (stereo.left + stereo.right) || 1;
+                const balance = (stereo.right - stereo.left) / totalVol;
+                
+                // Smooth panning to avoid jitter
+                const targetXPercent = 50 + (balance * 40); // +/- 40% from center
+                const currentXPercent = parseFloat(container.style.getPropertyValue('--light-x') || '50');
+                const newXPercent = currentXPercent + (targetXPercent - currentXPercent) * 0.1;
+
+                if (!isDragging) {
+                    container.style.setProperty('--light-x', `${newXPercent}%`);
+                }
+
+                // Debug Output to Screen
+                const debugEl = document.getElementById('debug-overlay');
+                if (debugEl) {
+                    if (frameCount % 10 === 0) {
+                        debugEl.innerHTML = `
+                            Audio Signal Status:<br>
+                            Total Sum: ${sum}<br>
+                            Avg Volume: ${avg.toFixed(2)}<br>
+                            L: ${stereo.left.toFixed(1)} | R: ${stereo.right.toFixed(1)}<br>
+                            Balance: ${balance.toFixed(2)}<br>
+                            Intensity: ${intensity.toFixed(2)}
+                        `;
+                        debugEl.style.color = sum > 0 ? '#0f0' : '#f00';
+                    }
+                    
+                    if (sum > 0) {
+                        const borderAlpha = 0.3 + (intensity * 0.7);
+                        const glowSize = 5 + (intensity * 20);
+                        debugEl.style.border = `2px solid rgba(0, 255, 0, ${borderAlpha})`;
+                        debugEl.style.boxShadow = `0 0 ${glowSize}px rgba(0, 255, 0, ${borderAlpha})`;
+                    } else {
+                        debugEl.style.border = 'none';
+                        debugEl.style.boxShadow = 'none';
+                    }
+                }
+
+                state.updateAudioData(audioData);
+
+                // VISUAL EFFECT: Extreme Color Shift & Spatial Audio
+                if (container) {
+                   const overlay = container.querySelector('.css-light-overlay');
+                   if (overlay) {
+                        // Pulse opacity
+                        overlay.style.opacity = (0.2 + intensity * 0.8).toFixed(2);
+                        
+                        // Extreme Color Shift: Blue -> Red
+                        // Blue: 0, 0, 255
+                        // Red: 255, 0, 0
+                        const r = Math.floor(intensity * 255);
+                        const b = Math.floor((1.0 - intensity) * 255);
+                        const g = 0;
+                        
+                        overlay.style.background = `radial-gradient(
+                            circle 1000px at var(--light-x, 50%) var(--light-y, 50%),
+                            rgba(${r}, ${g}, ${b}, 0.7) 0%,
+                            rgba(${r}, ${g}, ${b}, 0.3) 30%,
+                            rgba(0, 0, 0, 0.0) 70%
+                        )`;
+                   }
+                }
+            }
+        } catch (audioErr) {
+             console.warn("Audio Update Error (Non-fatal):", audioErr);
+        }
+
         state.render();
       } catch (e) {
         console.error("Render Crash:", e);
@@ -103,41 +224,30 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
     }
   }
 
-  function triggerInitialResize() {
+  function triggerResize() {
+      // Manuelles Update, respektiert targetDpr
+      currentDpr = targetDpr;
       const rect = container.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      const width = Math.max(1, Math.floor(rect.width * dpr));
-      const height = Math.max(1, Math.floor(rect.height * dpr));
-      if (state) {
+      const width = Math.max(1, Math.floor(rect.width * currentDpr));
+      const height = Math.max(1, Math.floor(rect.height * currentDpr));
+      
+      if (state && width > 0 && height > 0) {
           canvas.width = width;
           canvas.height = height;
           state.resize(width, height);
       }
   }
 
+  function triggerInitialResize() {
+      triggerResize();
+  }
+
   // --- Observers (Resize & Visibility) ---
   function setupObservers() {
-    // Resize Observer (Pixel Perfect für Retina/HighDPI)
+    // Resize Observer
     resizeObserver = new ResizeObserver(entries => {
-      for (const entry of entries) {
-        let width, height;
-        // Chrome/Edge: Physische Pixel
-        if (entry.devicePixelContentBoxSize) {
-          width = entry.devicePixelContentBoxSize[0].inlineSize;
-          height = entry.devicePixelContentBoxSize[0].blockSize;
-        } else {
-          // Firefox/Safari: Berechnung via DPR
-          const dpr = window.devicePixelRatio || 1;
-          width = Math.max(1, Math.floor(entry.contentRect.width * dpr));
-          height = Math.max(1, Math.floor(entry.contentRect.height * dpr));
-        }
-
-        if (state && width > 0 && height > 0) {
-          canvas.width = width;
-          canvas.height = height;
-          state.resize(width, height);
-        }
-      }
+      // Bei Container-Größenänderung (z.B. Fenstergröße) immer neu berechnen
+      triggerResize();
     });
     resizeObserver.observe(container);
 
@@ -263,11 +373,15 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
   position: absolute;
   inset: 0;
   pointer-events: none; /* clicks go through */
+  opacity: var(--light-opacity, 0.5);
+  transition: opacity 0.1s ease;
   background: radial-gradient(
     circle 800px at var(--light-x, 50%) var(--light-y, 50%),
-    rgba(100, 120, 255, 0.08) 0%,
-    rgba(0, 0, 0, 0.0) 60%
+    rgba(100, 150, 255, 0.6) 0%,
+    rgba(50, 80, 200, 0.2) 40%,
+    rgba(0, 0, 0, 0.0) 70%
   );
   mix-blend-mode: screen;
+  z-index: 2; /* Ensure it's above the canvas */
 }
 </style>

@@ -42,8 +42,8 @@
 
 <script type="module">
   // Importiere den Store (als .js)
-  import { theme, onSet } from '../src/stores/sceneStore.js';
-  import { connectAudioElement, resumeAudioContext } from '../src/stores/audioStore.js';
+  import { theme, onSet } from '../src/stores/sceneStore.ts';
+  import { connectAudioElement, resumeAudioContext } from '../src/stores/audioStore.ts';
   
   let isPlaying = false;
   
@@ -141,8 +141,11 @@
       // Connect to audio elements for signal extraction
       const stereoEl = document.getElementById('stereoPlayback');
       const binauralEl = document.getElementById('binauralPlayback');
+      const videoEl = document.getElementById('videoPlayback');
+      
       if (stereoEl) connectAudioElement(stereoEl);
       if (binauralEl) connectAudioElement(binauralEl);
+      if (videoEl) connectAudioElement(videoEl);
 
       dummyPlayButton.click();
       isPlaying = !isPlaying;
