@@ -20,9 +20,26 @@ console_log = "1.0.0"
 wasm-bindgen = "=0.2.105"
 wasm-bindgen-futures = "=0.4.55" # Die Version, die zu 0.2.105 passt
 web-sys = { version = "0.3.82", features = [
-    "Window", "Document", "Element", "HtmlCanvasElement", "console",
-    "Gpu", "GpuAdapter", "GpuDevice", "GpuQueue", "GpuTextureFormat",
-    "GpuBuffer", "GpuRenderPipeline"
+    "Window",
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "console",
+    "Gpu",
+    "GpuAdapter",
+    "GpuDevice",
+    "GpuQueue",
+    "GpuTextureFormat",
+    "GpuBuffer",
+    "GpuRenderPipeline",
+    "Performance",
+    "ImageBitmap",
+    "Blob",
+    "BlobPropertyBag",
+    "OffscreenCanvas",
+    "OffscreenCanvasRenderingContext2d",
+    "ImageData",
+    "CanvasRenderingContext2d"
 ]}
 
 # WebGPU/WGPU-Rendering
@@ -40,6 +57,9 @@ anyhow = "1.0.86"
 
 # Lade-Utilities
 reqwest = { version = "0.12.5", features = ["json"] }
+
+# Async Messaging
+flume = "0.11.0"
 
 # Sicherer Umgang mit Puffern
 bytemuck = { version = "1.16.0", features = ["derive"] }

@@ -7,6 +7,12 @@ export { onSet };
 // We'll use this in Phase 2
 export const isDynamicLightActive = atom(false);
 
+// --- Model State ---
+export const activeModel = persistentAtom<'modern' | 'abstract'>(
+  'activeModel',
+  'modern'
+);
+
 // --- Theme State ---
 // We use persistentAtom to save the user's choice
 export const theme = persistentAtom<'light' | 'dark'>(

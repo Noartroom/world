@@ -15,8 +15,8 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
 </div>
 
 <script type="module" define:vars={{ CANVAS_ID, modelPath }}>
-  import init, { startRenderer } from '/pkg/model_renderer.js';
-  import { theme, onSet } from '../src/stores/sceneStore.ts';
+  import init, { startRenderer } from '/pkg/model_renderer.js?v=gpu_fix_6';
+  import { theme, onSet, isDynamicLightActive } from '../src/stores/sceneStore.ts';
   import { getAudioData, getStereoData } from '../src/stores/audioStore.ts';
 
   // --- Global Scope (für Cleanup notwendig) ---
@@ -26,6 +26,7 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
   let intersectionObserver = null;
   let isVisible = true;
   let themeUnsub = null;
+  let lightUnsub = null;
 
   // Performance Monitoring (SOTA Guardrails)
   let lastFrameTime = performance.now();
@@ -144,25 +145,50 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
                 state.updateAudioData(audioData);
 
                 // VISUAL EFFECT: Extreme Color Shift & Spatial Audio
+                // Check the store value directly for the render loop logic
+                const dynamicLightEnabled = isDynamicLightActive.get();
+                
+                // Always update CSS vars if light enabled, OR if we need to clear them
                 if (container) {
                    const overlay = container.querySelector('.css-light-overlay');
-                   if (overlay) {
-                        // Pulse opacity
-                        overlay.style.opacity = (0.2 + intensity * 0.8).toFixed(2);
-                        
-                        // Extreme Color Shift: Blue -> Red
-                        // Blue: 0, 0, 255
-                        // Red: 255, 0, 0
-                        const r = Math.floor(intensity * 255);
-                        const b = Math.floor((1.0 - intensity) * 255);
-                        const g = 0;
-                        
-                        overlay.style.background = `radial-gradient(
-                            circle 1000px at var(--light-x, 50%) var(--light-y, 50%),
-                            rgba(${r}, ${g}, ${b}, 0.7) 0%,
-                            rgba(${r}, ${g}, ${b}, 0.3) 30%,
-                            rgba(0, 0, 0, 0.0) 70%
-                        )`;
+                   
+                   if (dynamicLightEnabled) {
+                       // 1. Update Overlay Visuals
+                       if (overlay) {
+                            // Pulse opacity
+                            overlay.style.opacity = (0.2 + intensity * 0.8).toFixed(2);
+                            
+                            // Extreme Color Shift: Blue -> Red
+                            const r = Math.floor(intensity * 255);
+                            const b = Math.floor((1.0 - intensity) * 255);
+                            const g = 0;
+                            
+                            overlay.style.background = `radial-gradient(
+                                circle 1000px at var(--light-x, 50%) var(--light-y, 50%),
+                                rgba(${r}, ${g}, ${b}, 0.7) 0%,
+                                rgba(${r}, ${g}, ${b}, 0.3) 30%,
+                                rgba(0, 0, 0, 0.0) 70%
+                            )`;
+                       }
+                       
+                       // 2. Update Global Vars (for Title Shadows, etc.)
+                       // Ensure we read the current mouse position from container style if available
+                       const lightX = container.style.getPropertyValue('--light-x') || '50%';
+                       const lightY = container.style.getPropertyValue('--light-y') || '50%';
+                       
+                       document.documentElement.style.setProperty('--light-x', lightX);
+                       document.documentElement.style.setProperty('--light-y', lightY);
+                       document.documentElement.style.setProperty('--light-intensity', intensity.toFixed(2));
+                       
+                   } else {
+                        // Disabled State
+                        if (overlay) {
+                            overlay.style.opacity = '0';
+                        }
+                        // We don't remove properties here to avoid "jumping" shadows, just zero intensity?
+                        // Or remove them to reset to default CSS fallback?
+                        // Let's keep positions but kill intensity for a smooth fade if transition used
+                        document.documentElement.style.setProperty('--light-intensity', '0');
                    }
                 }
             }
@@ -195,6 +221,17 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
             if (state) state.setTheme(newValue === 'dark');
         });
       }
+
+      // 1.5 Dynamic Light Sync
+      lightUnsub = onSet(isDynamicLightActive, ({ newValue }) => {
+         if (!newValue && container) {
+             const overlay = container.querySelector('.css-light-overlay');
+             if (overlay) overlay.style.opacity = '0';
+             document.documentElement.style.removeProperty('--light-x');
+             document.documentElement.style.removeProperty('--light-y');
+             document.documentElement.style.removeProperty('--light-intensity');
+         }
+      });
 
       // 2. Asset Loading
       const response = await fetch(modelPath); 
@@ -288,7 +325,7 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
         const deltaX = e.clientX - lastX;
         const deltaY = e.clientY - lastY;
         
-        const sensitivity = 1.0; 
+        const sensitivity = 1.0;
         state.update_camera(deltaX * sensitivity, deltaY * sensitivity, 0);
 
         lastX = e.clientX;
@@ -299,10 +336,13 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
       if (state) {
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
-        state.update(x, y, rect.width, rect.height);
         
-        container.style.setProperty('--light-x', `${e.clientX}px`);
-        container.style.setProperty('--light-y', `${e.clientY}px`);
+        // Only update dynamic light position if enabled
+        if (isDynamicLightActive.get()) {
+            state.update(x, y, rect.width, rect.height);
+            container.style.setProperty('--light-x', `${e.clientX}px`);
+            container.style.setProperty('--light-y', `${e.clientY}px`);
+        }
       }
     });
 
@@ -320,6 +360,7 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
     if (resizeObserver) resizeObserver.disconnect();
     if (intersectionObserver) intersectionObserver.disconnect();
     if (themeUnsub) themeUnsub();
+    if (lightUnsub) lightUnsub();
     
     if (state && state.free) state.free();
     state = null;
@@ -373,7 +414,7 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
   position: absolute;
   inset: 0;
   pointer-events: none; /* clicks go through */
-  opacity: var(--light-opacity, 0.5);
+  opacity: var(--light-opacity, 0);
   transition: opacity 0.1s ease;
   background: radial-gradient(
     circle 800px at var(--light-x, 50%) var(--light-y, 50%),

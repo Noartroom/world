@@ -1,36 +1,36 @@
 ---
 import Layout from '@/layouts/Layout.astro';
-import ImmersiveScene from '@/components/ImmersiveScene.tsx';
 import IamfPlayer from '@/components/IamfPlayer.astro';
 import Renderer from '@/components/Renderer.astro';
 ---
 <Layout title="Astro Prototype">
   <main>
+    <h1 id="page-title" class="floating-title">TITLE</h1>
     <div class="global-controls">
       <button id="themeToggle" class="global-toggle">Toggle Theme</button>
+      <button id="modelToggle" class="global-toggle">Switch Model</button>
       <button id="light-engine-toggle" class="global-toggle">Toggle Dynamic Light</button>
     </div>
     <Renderer />
-    <!-- 
-      This is the "Astro Island".
-      'client:load' tells Astro to hydrate this React component
-      immediately on page load.
-    -->
-    <!-- <ImmersiveScene client:load />
-
-    <IamfPlayer /> -->
+    
+    <!-- <IamfPlayer /> -->
     <IamfPlayer />
   </main>
 </Layout>
-
 <script>
   // This script controls the global buttons
-  import { theme, isDynamicLightActive } from '@/stores/sceneStore';
+  import { theme, activeModel, isDynamicLightActive } from '../stores/sceneStore';
 
   const themeButton = document.getElementById('themeToggle');
   themeButton?.addEventListener('click', () => {
     const currentTheme = theme.get();
     theme.set(currentTheme === 'light' ? 'dark' : 'light');
+  });
+
+  const modelButton = document.getElementById('modelToggle');
+  modelButton?.addEventListener('click', () => {
+    const current = activeModel.get();
+    activeModel.set(current === 'modern' ? 'abstract' : 'modern');
   });
 
   const lightButton = document.getElementById('light-engine-toggle');
@@ -56,6 +56,7 @@ import Renderer from '@/components/Renderer.astro';
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
+    pointer-events: auto; /* Re-enable clicking */
   }
   .global-toggle {
     padding: 0.5em 1em;
@@ -64,5 +65,27 @@ import Renderer from '@/components/Renderer.astro';
   }
   .global-toggle:hover {
     background: #646cff;
+  }
+  .floating-title {
+    position: absolute;
+    top: 15%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 6rem;
+    font-weight: 900;
+    color: rgba(255, 255, 255, 0.9);
+    pointer-events: none;
+    z-index: 5;
+    text-transform: uppercase;
+    letter-spacing: 0.5rem;
+    
+    /* Dynamic Shadow based on light position */
+    --shadow-x: calc((var(--light-x, 50vw) - 50vw) * -0.1);
+    --shadow-y: calc((var(--light-y, 50vh) - 50vh) * -0.1);
+    --shadow-blur: calc(10px + (var(--light-intensity, 0) * 20px));
+    --shadow-color: rgba(0, 0, 0, 0.5);
+    
+    filter: drop-shadow(var(--shadow-x) var(--shadow-y) var(--shadow-blur) var(--shadow-color));
+    transition: filter 0.1s ease-out;
   }
 </style>
