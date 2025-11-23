@@ -445,8 +445,9 @@ pub struct State {
 
     light_buffer: wgpu::Buffer,
     light_bind_group: wgpu::BindGroup,
-    light_pos_3d: Vec3, // 3D scene light position (used by blob or cursor)
-    cursor_light_pos_3d: Vec3, // Cursor-directed light position (for CSS projection)
+    light_pos_3d: Vec3, // 3D scene light position (blob light OR cursor light, whichever is active)
+    cursor_light_pos_3d: Vec3, // Cursor-directed light position (for CSS projection and 3D when dynamic light active)
+    blob_light_pos_3d: Vec3, // Blob light position (independent, always active when blob exists and enabled)
     #[allow(dead_code)]
     light_pos_2d: Vec2,
     is_dark_theme: bool, // Track theme for lighting
@@ -653,9 +654,12 @@ impl State {
     }
     
     // Update lighting colors based on current theme (no audio influence)
-    // Uses cursor-controlled light position (light_pos_3d) or blob position
+    // Determines which light to use: blob light (if exists and enabled) OR cursor light (if dynamic light active)
     fn update_theme_lighting(&mut self) {
-        // Use cursor-controlled light position (drag-controlled) or blob position
+        // Priority: Blob light if blob exists and enabled, otherwise cursor light if dynamic light active
+        // Note: This function is called from render loop, so we need to determine the active light here
+        // For now, we'll use blob light if available, otherwise cursor light
+        // The actual selection happens in the render loop before calling this
         let light_pos = self.light_pos_3d;
         
         if self.is_dark_theme {
@@ -983,19 +987,17 @@ impl State {
                 ));
             }
             
-            // Update 3D scene light position to blob position if blob light is enabled
-            if self.blob_light_enabled {
-                self.light_pos_3d = self.blob_position;
-                self.update_theme_lighting();
-            } else {
-                // Blob exists but light is off - use cursor position for 3D scene light
-                self.light_pos_3d = self.cursor_light_pos_3d;
-                self.update_theme_lighting();
-            }
+            // Update blob light position (always track blob position)
+            self.blob_light_pos_3d = self.blob_position;
+        }
+        
+        // Update 3D scene light: Use blob light if blob exists and enabled, otherwise use cursor light
+        // This makes blob light independent - it always works when blob exists and is enabled
+        if self.blob_exists && self.blob_light_enabled {
+            self.light_pos_3d = self.blob_light_pos_3d;
         } else {
-            // No blob - use cursor position for 3D scene light
+            // Use cursor light (will be updated by dynamic light system if active)
             self.light_pos_3d = self.cursor_light_pos_3d;
-            self.update_theme_lighting();
         }
     }
     
@@ -1031,8 +1033,10 @@ impl State {
                 &self.material_layout,
             ));
             
-            // Set light position to blob position
-            self.light_pos_3d = self.blob_position;
+            // Initialize blob light position
+            self.blob_light_pos_3d = self.blob_position;
+            // Update 3D scene light to use blob light
+            self.light_pos_3d = self.blob_light_pos_3d;
             self.update_theme_lighting();
         }
     }
@@ -1043,21 +1047,27 @@ impl State {
         self.blob_exists = false;
         self.blob_mesh = None;
         self.blob_dragging = false;
-        // Reset light position to center
-        self.light_pos_3d = vec3(0.0, 2.0, 0.0);
+        // When blob is despawned, switch to cursor light (if dynamic light is active)
+        // Otherwise light will be at default position
+        self.light_pos_3d = self.cursor_light_pos_3d;
         self.update_theme_lighting();
     }
     
-    // Toggle blob light on/off
+    // Toggle blob light on/off (independent of dynamic light)
     #[wasm_bindgen(js_name = "toggleBlobLight")]
     pub fn toggle_blob_light(&mut self) {
         if self.blob_exists {
             self.blob_light_enabled = !self.blob_light_enabled;
+            // Update blob light position
             if self.blob_light_enabled {
-                self.light_pos_3d = self.blob_position;
+                self.blob_light_pos_3d = self.blob_position;
+            }
+            // Update 3D scene light based on new state
+            if self.blob_light_enabled {
+                self.light_pos_3d = self.blob_light_pos_3d;
             } else {
-                // Turn off light (set to far away or zero intensity)
-                self.light_pos_3d = vec3(0.0, -100.0, 0.0);
+                // Blob light off - use cursor light if available
+                self.light_pos_3d = self.cursor_light_pos_3d;
             }
             self.update_theme_lighting();
         }
@@ -1243,10 +1253,14 @@ impl State {
         self.queue.write_buffer(&self.audio_buffer, 0, bytemuck::cast_slice(&[audio_uniform]));
         
         // 3. Update lighting (ensure it's updated every frame)
-        // Update based on current state (blob or cursor)
+        // Blob light is independent - always active when blob exists and enabled
+        // Cursor light is used when blob light is not active
         if self.blob_exists && self.blob_light_enabled {
-            self.light_pos_3d = self.blob_position;
+            // Update blob light position to current blob position
+            self.blob_light_pos_3d = self.blob_position;
+            self.light_pos_3d = self.blob_light_pos_3d;
         } else {
+            // Use cursor light (for dynamic light system)
             self.light_pos_3d = self.cursor_light_pos_3d;
         }
         self.update_theme_lighting();
@@ -1631,7 +1645,7 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
         audio_buffer, audio_bind_group, audio_data: Vec::new(),
         camera_buffer, camera_bind_group, 
         camera_target: Vec3::ZERO, camera_radius: 10.0, camera_azimuth: 0.0, camera_polar: 1.57,
-        light_buffer, light_bind_group, light_pos_3d: Vec3::ZERO, cursor_light_pos_3d: Vec3::ZERO, light_pos_2d: Vec2::ZERO,
+        light_buffer, light_bind_group, light_pos_3d: Vec3::ZERO, cursor_light_pos_3d: Vec3::ZERO, blob_light_pos_3d: Vec3::ZERO, light_pos_2d: Vec2::ZERO,
         is_dark_theme: true, // Default to dark theme
         blob_exists: false,
         blob_position: vec3(0.0, 5.0, 0.0), // Spawn at top of scene

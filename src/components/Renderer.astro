@@ -172,8 +172,8 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
                         const currentTheme = theme.get();
                         const isDark = currentTheme === 'dark';
                         
-                        // Static opacity (no audio influence)
-                        const baseOpacity = isDark ? 0.15 : 0.25;
+                        // Increased opacity for stronger emittance effect
+                        const baseOpacity = isDark ? 0.35 : 0.45; // Increased from 0.15/0.25
                         overlay.style.opacity = baseOpacity.toFixed(2);
                         
                         // Theme-based color temperature (static, no audio)
@@ -188,17 +188,18 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
                             b = 240;
                         }
                         
-                        // Static radial gradient (position updated in pointermove)
+                        // Larger, more intense radial gradient for stronger emittance
                         overlay.style.background = `radial-gradient(
-                            circle 1000px at var(--light-x, 50%) var(--light-y, 50%),
+                            circle 1500px at var(--light-x, 50%) var(--light-y, 50%),
                             rgba(${r}, ${g}, ${b}, ${baseOpacity}) 0%,
-                            rgba(${r}, ${g}, ${b}, ${baseOpacity * 0.6}) 30%,
-                            rgba(0, 0, 0, 0.0) 70%
+                            rgba(${r}, ${g}, ${b}, ${baseOpacity * 0.7}) 25%,
+                            rgba(${r}, ${g}, ${b}, ${baseOpacity * 0.4}) 50%,
+                            rgba(0, 0, 0, 0.0) 80%
                         )`;
                    }
                    
-                   // Static intensity (no audio influence)
-                   document.documentElement.style.setProperty('--light-intensity', '1.0');
+                   // Increased intensity for stronger emittance
+                   document.documentElement.style.setProperty('--light-intensity', '1.5'); // Increased from 1.0
                    document.body.classList.add('light-engine-active');
                 }
             }
@@ -554,15 +555,13 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
           container.style.cursor = 'grabbing';
         }
         
-        // Update blob position if dragging
-        if (isBlobActive.get() && isDraggingBlob) {
-          state.update(x, y, rect.width, rect.height);
-        }
+        // Always update cursor light position and blob position (if dragging)
+        // This ensures both systems work independently
+        state.update(x, y, rect.width, rect.height);
         
-        // Update cursor-directed CSS lighting if enabled (separate from blob)
+        // Update cursor-directed CSS lighting if enabled (completely independent from blob)
+        // This only affects CSS overlay, not 3D scene lighting
         if (isDynamicLightActive.get()) {
-            // Update cursor light position (always tracks cursor for CSS)
-            state.update(x, y, rect.width, rect.height);
             
             // Project cursor-directed 3D light position to 2D screen space for CSS
             // This always uses cursor position, never blob position
