@@ -374,109 +374,6 @@ fn create_sphere_mesh(device: &wgpu::Device, queue: &wgpu::Queue, radius: f32, s
     }
 }
 
-// Generate a ring/circle mesh for the orbital path visualization
-fn create_ring_mesh(device: &wgpu::Device, queue: &wgpu::Queue, center: Vec3, radius: f32, y_height: f32, segments: u32, material_layout: &wgpu::BindGroupLayout) -> Mesh {
-    let mut positions = Vec::new();
-    let mut normals = Vec::new();
-    let mut uvs = Vec::new();
-    let mut indices = Vec::new();
-    
-    // Generate ring vertices in XZ plane at y_height
-    for i in 0..=segments {
-        let angle = (i as f32 / segments as f32) * 2.0 * std::f32::consts::PI;
-        let x = angle.cos() * radius;
-        let z = angle.sin() * radius;
-        
-        positions.push([center.x + x, center.y + y_height, center.z + z]);
-        normals.push([0.0, 1.0, 0.0]); // Up normal for flat ring
-        uvs.push([i as f32 / segments as f32, 0.5]);
-    }
-    
-    // Create line segments (each segment connects two adjacent vertices)
-    for i in 0..segments {
-        indices.push(i as u32);
-        indices.push((i + 1) as u32);
-    }
-    
-    // Create vertex buffer - use default tangents for ring (line segments don't need proper tangents)
-    let mut vertices = Vec::new();
-    for i in 0..positions.len() {
-        vertices.push(ModelVertex {
-            position: positions[i],
-            normal: normals[i],
-            tex_coord: uvs[i],
-            tangent: [1.0, 0.0, 0.0, 1.0], // Default tangent (ring doesn't need proper tangents)
-        });
-    }
-    
-    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Orbital Path Vertex Buffer"),
-        contents: bytemuck::cast_slice(&vertices),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-    
-    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Orbital Path Index Buffer"),
-        contents: bytemuck::cast_slice(&indices),
-        usage: wgpu::BufferUsages::INDEX,
-    });
-    
-    // Create semi-transparent glowing material for the path
-    let path_texture = Texture::single_pixel(device, queue, [200, 220, 255, 180], true); // Semi-transparent cyan
-    let white_normal = Texture::single_pixel(device, queue, [128, 128, 255, 255], false);
-    let smooth_texture = Texture::single_pixel(device, queue, [0, 0, 0, 255], false);
-    
-    let sampler = Rc::new(device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("Path Sampler"),
-        address_mode_u: wgpu::AddressMode::ClampToEdge,
-        address_mode_v: wgpu::AddressMode::ClampToEdge,
-        address_mode_w: wgpu::AddressMode::ClampToEdge,
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::FilterMode::Linear,
-        lod_min_clamp: 0.0,
-        lod_max_clamp: 100.0,
-        compare: None,
-        anisotropy_clamp: 1,
-        border_color: None,
-    }));
-    
-    let material_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        layout: material_layout,
-        entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&path_texture.view) },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&white_normal.view) },
-            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&sampler) },
-            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&smooth_texture.view) },
-            wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&sampler) },
-        ],
-        label: None,
-    });
-    
-    // Calculate AABB for ring (circle in XZ plane)
-    let ring_center = vec3(center.x, center.y + y_height, center.z);
-    let aabb_min = ring_center - vec3(radius, 0.01, radius); // Small Y extent for flat ring
-    let aabb_max = ring_center + vec3(radius, 0.01, radius);
-    
-    Mesh {
-        vertex_buffer,
-        index_buffer,
-        num_indices: indices.len() as u32,
-        material_bind_group,
-        diffuse_index: None,
-        normal_index: None,
-        mr_index: None,
-        diffuse_view: Rc::new(path_texture.view),
-        normal_view: Rc::new(white_normal.view),
-        mr_view: Rc::new(smooth_texture.view),
-        sampler,
-        center: ring_center,
-        aabb_min,
-        aabb_max,
-    }
-}
-
 fn compute_tangents(positions: &[[f32; 3]], normals: &[[f32; 3]], uvs: &[[f32; 2]], indices: &[u32]) -> Vec<[f32; 4]> {
     let mut tan1 = vec![Vec3::ZERO; positions.len()];
     let mut tan2 = vec![Vec3::ZERO; positions.len()];
@@ -543,7 +440,6 @@ pub struct State {
     grid_pipeline: wgpu::RenderPipeline,
     opaque_pipeline: wgpu::RenderPipeline,
     transparent_pipeline: wgpu::RenderPipeline,
-    line_pipeline: wgpu::RenderPipeline, // Pipeline for line rendering (orbital path)
     mipmap_pipeline_linear: Rc<wgpu::RenderPipeline>,
     mipmap_pipeline_srgb: Rc<wgpu::RenderPipeline>,
     mipmap_bind_group_layout: Rc<wgpu::BindGroupLayout>,
@@ -580,9 +476,6 @@ pub struct State {
     blob_target_position: Vec3, // Target position for smooth interpolation
     blob_light_enabled: bool,
     blob_mesh: Option<Mesh>,
-    blob_orbital_path_mesh: Option<Mesh>, // Visual ring showing orbital path
-    blob_path_last_radius: f32, // Track last path radius to avoid unnecessary updates
-    blob_path_last_y: f32, // Track last path Y to avoid unnecessary updates
     blob_dragging: bool,
     blob_drag_offset: Vec3, // Offset from blob center when drag started
     blob_drag_depth: f32, // Stable depth for dragging (prevents jumping)
@@ -1290,49 +1183,8 @@ impl State {
         // Smooth interpolation towards target position (every frame, even when not dragging)
         if self.blob_exists {
             
-            // Update orbital path visualization (ring at current Y height)
-            // Only show path while dragging
-            if self.blob_dragging {
-                // Use target position for smoother, more stable path (avoids jitter from interpolation)
-                // Ensure path radius is large enough to fit around the model
-                let base_radius = (self.model_extent * 0.5).max(3.0); // At least half the model extent
-                let path_radius = {
-                    let to_model = self.blob_target_position - self.model_center;
-                    let horizontal_dist = (to_model.x * to_model.x + to_model.z * to_model.z).sqrt();
-                    horizontal_dist.max(base_radius).min(base_radius * 2.5) // Clamp to valid range based on model size
-                };
-                
-                // Position path at fixed Y below title text (title is at ~15% from top of screen)
-                // In world space, position it well below the model to avoid intersection
-                // Use a fixed Y position relative to model center that's below typical model height
-                let path_y = -2.5; // Fixed Y offset below model center (negative = below)
-                
-                // Only update path mesh if radius changed significantly (larger threshold to reduce jitter)
-                // Y is fixed, so we don't need to check for Y changes
-                let radius_changed = (path_radius - self.blob_path_last_radius).abs() > 0.3;
-                let y_changed = (path_y - self.blob_path_last_y).abs() > 0.01; // Small threshold since Y is fixed
-                
-                if radius_changed || y_changed || self.blob_orbital_path_mesh.is_none() {
-                    self.blob_path_last_radius = path_radius;
-                    self.blob_path_last_y = path_y;
-                    
-                    self.blob_orbital_path_mesh = Some(create_ring_mesh(
-                        &self.device,
-                        &self.queue,
-                        self.model_center,
-                        path_radius,
-                        path_y,
-                        64, // Smooth circle with 64 segments
-                        &self.material_layout,
-                    ));
-                }
-            } else {
-                // Hide path when not dragging
-                self.blob_orbital_path_mesh = None;
-            }
-            
             // Use adaptive smoothing: much faster when dragging for immediate response, slower when not dragging
-            let smoothing_factor = if self.blob_dragging { 
+            let smoothing_factor = if self.blob_dragging {
                 0.8  // Much faster when dragging - almost direct following for responsiveness
             } else { 
                 0.15 // Slower when not dragging - smooth, natural movement
@@ -1413,17 +1265,6 @@ impl State {
                 &self.material_layout,
             ));
             
-            // Initialize path tracking (path will be created when dragging starts)
-            // Don't create path mesh on spawn - only show it while dragging
-            let spawn_radius = {
-                let to_model = spawn_position - self.model_center;
-                let horizontal_dist = (to_model.x * to_model.x + to_model.z * to_model.z).sqrt();
-                horizontal_dist.max(base_radius).min(base_radius * 2.5)
-            };
-            self.blob_path_last_radius = spawn_radius;
-            self.blob_path_last_y = -2.5; // Fixed Y position below model (will be used when dragging starts)
-            self.blob_orbital_path_mesh = None; // No path visible until dragging starts
-            
             // Initialize blob light position
             self.blob_light_pos_3d = self.blob_position;
             // Light position blending is handled in render() function
@@ -1436,7 +1277,6 @@ impl State {
     pub fn despawn_blob(&mut self) {
         self.blob_exists = false;
         self.blob_mesh = None;
-        self.blob_orbital_path_mesh = None;
         self.blob_dragging = false;
         // Light position blending is handled in render() function
         // When blob is despawned, render() will automatically use cursor light
@@ -1833,21 +1673,6 @@ impl State {
                 }
             }
             
-            // Draw Orbital Path (only while dragging) - rendered as line ring
-            // Only show path when actively dragging to prevent it from staying visible
-            if self.blob_dragging {
-            if let Some(path_mesh) = &self.blob_orbital_path_mesh {
-                // Frustum culling: skip if path is outside camera view
-                if self.is_aabb_in_frustum(path_mesh.aabb_min, path_mesh.aabb_max) {
-                    render_pass.set_pipeline(&self.line_pipeline);
-                    render_pass.set_bind_group(3, &path_mesh.material_bind_group, &[]);
-                    render_pass.set_vertex_buffer(0, path_mesh.vertex_buffer.slice(..));
-                    render_pass.set_index_buffer(path_mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                    render_pass.draw_indexed(0..path_mesh.num_indices, 0, 0..1);
-                    }
-                }
-            }
-            
             // Draw Light Blob (if exists) - rendered as opaque sphere
             // Note: No frustum culling for blob - it should always be visible when it exists
             // to prevent it from disappearing during orbital movement
@@ -2043,25 +1868,6 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
         multiview: None
     });
 
-    // Line pipeline for orbital path (uses same shader and layout as model pipeline)
-    let line_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("Line Pipeline"), layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState { module: &shader, entry_point: "vs_model", buffers: &[ModelVertex::desc()], compilation_options: Default::default() },
-        fragment: Some(wgpu::FragmentState { module: &shader, entry_point: "fs_model", targets: &[Some(wgpu::ColorTargetState { format: config.format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }),
-        primitive: wgpu::PrimitiveState { 
-            topology: wgpu::PrimitiveTopology::LineList, // Use LineList for line segments
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None, // Don't cull lines
-            unclipped_depth: false,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            conservative: false,
-        }, 
-        depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: false, depth_compare: wgpu::CompareFunction::Less, stencil: Default::default(), bias: Default::default() }),
-        multisample: wgpu::MultisampleState { count: actual_sample_count, mask: !0, alpha_to_coverage_enabled: false },
-        multiview: None
-    });
-
     // Mipmap Generation Pipeline
     let mipmap_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         entries: &[
@@ -2134,12 +1940,12 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
     Ok(State {
         surface, device: Rc::new(device), queue: Rc::new(queue), config, depth_texture, depth_view,
         msaa_texture, msaa_view, sample_count: actual_sample_count,
-        grid_pipeline, opaque_pipeline, transparent_pipeline, line_pipeline,
+        grid_pipeline, opaque_pipeline, transparent_pipeline,
         mipmap_pipeline_linear: Rc::new(mipmap_pipeline_linear),
         mipmap_pipeline_srgb: Rc::new(mipmap_pipeline_srgb),
         mipmap_bind_group_layout: Rc::new(mipmap_bind_group_layout),
         audio_buffer, audio_bind_group, audio_data: Vec::new(), cached_audio_intensity: 0.0,
-        camera_buffer, camera_bind_group, 
+        camera_buffer, camera_bind_group,
         camera_target: Vec3::ZERO, camera_radius: 10.0, camera_azimuth: 0.0, camera_polar: 1.57,
         light_buffer, light_bind_group, light_pos_3d: Vec3::ZERO, cursor_light_pos_3d: Vec3::ZERO, cursor_light_active: true, blob_light_pos_3d: Vec3::ZERO, light_pos_2d: Vec2::ZERO,
         is_dark_theme: true, // Default to dark theme
@@ -2148,9 +1954,6 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
         blob_target_position: vec3(0.0, 5.0, 0.0), // Target for smooth interpolation
         blob_light_enabled: true,
         blob_mesh: None,
-        blob_orbital_path_mesh: None,
-        blob_path_last_radius: 0.0,
-        blob_path_last_y: 0.0,
         blob_dragging: false,
         blob_drag_offset: Vec3::ZERO,
         blob_drag_depth: 0.0,

@@ -14,12 +14,6 @@ const { title } = Astro.props;
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="generator" content={Astro.generator} />
     <title>{title}</title>
-    <!-- <script is:raw src="/js/orbit-camera.js"></script>
-    <script is:raw src="/js/interaction-raycast.js"></script> -->
-    <!-- <script is:raw src="/js/playcanvas-stable.min.js"></script>
-    <script is:raw src="/js/ammo.wasm.js"></script>
-    <script is:raw src="/js/orbit-camera.js"></script>
-    <script is:raw src="/js/interaction-raycast.js"></script> -->
     <script is:inline>
       const detectSystemTheme = () =>
         window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
