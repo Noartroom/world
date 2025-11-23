@@ -359,6 +359,102 @@ fn create_sphere_mesh(device: &wgpu::Device, queue: &wgpu::Queue, radius: f32, s
     }
 }
 
+// Generate a ring/circle mesh for the orbital path visualization
+fn create_ring_mesh(device: &wgpu::Device, queue: &wgpu::Queue, center: Vec3, radius: f32, y_height: f32, segments: u32, material_layout: &wgpu::BindGroupLayout) -> Mesh {
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut uvs = Vec::new();
+    let mut indices = Vec::new();
+    
+    // Generate ring vertices in XZ plane at y_height
+    for i in 0..=segments {
+        let angle = (i as f32 / segments as f32) * 2.0 * std::f32::consts::PI;
+        let x = angle.cos() * radius;
+        let z = angle.sin() * radius;
+        
+        positions.push([center.x + x, center.y + y_height, center.z + z]);
+        normals.push([0.0, 1.0, 0.0]); // Up normal for flat ring
+        uvs.push([i as f32 / segments as f32, 0.5]);
+    }
+    
+    // Create line segments (each segment connects two adjacent vertices)
+    for i in 0..segments {
+        indices.push(i as u32);
+        indices.push((i + 1) as u32);
+    }
+    
+    // Create vertex buffer - use default tangents for ring (line segments don't need proper tangents)
+    let mut vertices = Vec::new();
+    for i in 0..positions.len() {
+        vertices.push(ModelVertex {
+            position: positions[i],
+            normal: normals[i],
+            tex_coord: uvs[i],
+            tangent: [1.0, 0.0, 0.0, 1.0], // Default tangent (ring doesn't need proper tangents)
+        });
+    }
+    
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Orbital Path Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Orbital Path Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+    
+    // Create semi-transparent glowing material for the path
+    let path_texture = Texture::single_pixel(device, queue, [200, 220, 255, 180], true); // Semi-transparent cyan
+    let white_normal = Texture::single_pixel(device, queue, [128, 128, 255, 255], false);
+    let smooth_texture = Texture::single_pixel(device, queue, [0, 0, 0, 255], false);
+    
+    let sampler = Rc::new(device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("Path Sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::FilterMode::Linear,
+        lod_min_clamp: 0.0,
+        lod_max_clamp: 100.0,
+        compare: None,
+        anisotropy_clamp: 1,
+        border_color: None,
+    }));
+    
+    let material_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout: material_layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&path_texture.view) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&white_normal.view) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&sampler) },
+            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&smooth_texture.view) },
+            wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&sampler) },
+        ],
+        label: None,
+    });
+    
+    Mesh {
+        vertex_buffer,
+        index_buffer,
+        num_indices: indices.len() as u32,
+        material_bind_group,
+        diffuse_index: None,
+        normal_index: None,
+        mr_index: None,
+        diffuse_view: Rc::new(path_texture.view),
+        normal_view: Rc::new(white_normal.view),
+        mr_view: Rc::new(smooth_texture.view),
+        sampler,
+        center: Vec3::ZERO,
+    }
+}
+
 fn compute_tangents(positions: &[[f32; 3]], normals: &[[f32; 3]], uvs: &[[f32; 2]], indices: &[u32]) -> Vec<[f32; 4]> {
     let mut tan1 = vec![Vec3::ZERO; positions.len()];
     let mut tan2 = vec![Vec3::ZERO; positions.len()];
@@ -425,6 +521,7 @@ pub struct State {
     grid_pipeline: wgpu::RenderPipeline,
     opaque_pipeline: wgpu::RenderPipeline,
     transparent_pipeline: wgpu::RenderPipeline,
+    line_pipeline: wgpu::RenderPipeline, // Pipeline for line rendering (orbital path)
     sky_pipeline: wgpu::RenderPipeline,
     mipmap_pipeline_linear: Rc<wgpu::RenderPipeline>,
     mipmap_pipeline_srgb: Rc<wgpu::RenderPipeline>,
@@ -458,6 +555,9 @@ pub struct State {
     blob_target_position: Vec3, // Target position for smooth interpolation
     blob_light_enabled: bool,
     blob_mesh: Option<Mesh>,
+    blob_orbital_path_mesh: Option<Mesh>, // Visual ring showing orbital path
+    blob_path_last_radius: f32, // Track last path radius to avoid unnecessary updates
+    blob_path_last_y: f32, // Track last path Y to avoid unnecessary updates
     blob_dragging: bool,
     blob_drag_offset: Vec3, // Offset from blob center when drag started
     
@@ -977,40 +1077,87 @@ impl State {
             let far_world = vec3(far_point.x, far_point.y, far_point.z) / far_point.w;
             let ray_dir = (far_world - near_world).normalize();
             
-            // Intersect ray with plane at blob's target Y position (Y can be changed via scroll)
+            // Intersect ray with horizontal plane at blob's current Y position
+            // This allows dragging in XZ plane while Y is controlled by scroll
             let plane_y = self.blob_target_position.y;
-            let t = (plane_y - near_world.y) / ray_dir.y;
-            let intersection = near_world + ray_dir * t;
-            
-            // Update target position (X and Z from intersection, Y stays from scroll)
-            self.blob_target_position = vec3(intersection.x, plane_y, intersection.z);
+            if ray_dir.y.abs() > 0.001 {
+                let t = (plane_y - near_world.y) / ray_dir.y;
+                let intersection = near_world + ray_dir * t;
+                
+                // Update target position (X and Z from intersection, Y stays from scroll)
+                // The plane locking will be applied in the update() function
+                self.blob_target_position = vec3(intersection.x, plane_y, intersection.z);
+            }
         }
         
         // Smooth interpolation towards target position (every frame, even when not dragging)
         if self.blob_exists {
-            // Apply gravitational attraction towards model when dragging and in proximity
+            // Lock dragging to a 2D plane at fixed distance from model center
+            // This allows full orbital movement around the model
             if self.blob_dragging {
-                let attraction_distance = 8.0; // Distance threshold for attraction (units)
-                let attraction_strength = 0.15; // How strong the pull is (0.0-1.0)
-                let min_distance = 1.5; // Minimum distance to maintain from model center
+                // Calculate current horizontal distance from model center
+                let to_model = self.blob_target_position - self.model_center;
+                let horizontal_dist = (to_model.x * to_model.x + to_model.z * to_model.z).sqrt();
                 
-                // Calculate distance to model center
-                let to_model = self.model_center - self.blob_target_position;
-                let distance = to_model.length();
+                // Maintain fixed distance from model (auto-adjust based on current Y position)
+                // Higher Y = further from model center horizontally
+                let target_radius = 3.0 + (self.blob_target_position.y - self.model_center.y) * 0.3;
+                let min_radius = 2.0;
+                let max_radius = 8.0;
+                let clamped_radius = target_radius.clamp(min_radius, max_radius);
                 
-                // Apply gravitational pull if within attraction distance
-                if distance < attraction_distance && distance > min_distance {
-                    // Normalize direction and scale by attraction strength
-                    let pull_direction = to_model.normalize();
-                    let pull_strength = (1.0 - (distance / attraction_distance)) * attraction_strength;
-                    
-                    // Apply pull to target position (smoothly pulls blob towards model)
-                    self.blob_target_position = self.blob_target_position + pull_direction * pull_strength;
-                } else if distance <= min_distance {
-                    // Push away if too close (prevents blob from going inside model)
-                    let push_direction = (self.blob_target_position - self.model_center).normalize();
-                    self.blob_target_position = self.model_center + push_direction * min_distance;
+                // Project blob position onto circle at fixed radius from model center
+                // This ensures full orbital movement without going through center
+                if horizontal_dist > 0.001 {
+                    // Normalize the horizontal direction and scale to target radius
+                    let dir_x = to_model.x / horizontal_dist;
+                    let dir_z = to_model.z / horizontal_dist;
+                    self.blob_target_position.x = self.model_center.x + dir_x * clamped_radius;
+                    self.blob_target_position.z = self.model_center.z + dir_z * clamped_radius;
+                } else {
+                    // If directly above/below model, place at default position
+                    self.blob_target_position.x = self.model_center.x + clamped_radius;
+                    self.blob_target_position.z = self.model_center.z;
                 }
+            }
+            
+            // Update orbital path visualization (ring at current Y height)
+            // Only show path while dragging
+            if self.blob_dragging {
+                // Use target position for smoother, more stable path (avoids jitter from interpolation)
+                let path_radius = {
+                    let to_model = self.blob_target_position - self.model_center;
+                    let horizontal_dist = (to_model.x * to_model.x + to_model.z * to_model.z).sqrt();
+                    horizontal_dist.max(2.0).min(8.0) // Clamp to valid range
+                };
+                
+                // Position path at fixed Y below title text (title is at ~15% from top of screen)
+                // In world space, position it well below the model to avoid intersection
+                // Use a fixed Y position relative to model center that's below typical model height
+                let path_y = -2.5; // Fixed Y offset below model center (negative = below)
+                
+                // Only update path mesh if radius changed significantly (larger threshold to reduce jitter)
+                // Y is fixed, so we don't need to check for Y changes
+                let radius_changed = (path_radius - self.blob_path_last_radius).abs() > 0.3;
+                let y_changed = (path_y - self.blob_path_last_y).abs() > 0.01; // Small threshold since Y is fixed
+                
+                if radius_changed || y_changed || self.blob_orbital_path_mesh.is_none() {
+                    self.blob_path_last_radius = path_radius;
+                    self.blob_path_last_y = path_y;
+                    
+                    self.blob_orbital_path_mesh = Some(create_ring_mesh(
+                        &self.device,
+                        &self.queue,
+                        self.model_center,
+                        path_radius,
+                        path_y,
+                        64, // Smooth circle with 64 segments
+                        &self.material_layout,
+                    ));
+                }
+            } else {
+                // Hide path when not dragging
+                self.blob_orbital_path_mesh = None;
             }
             
             let smoothing_factor = 0.25; // Higher = faster, lower = smoother (0.1-0.5 range)
@@ -1022,8 +1169,8 @@ impl State {
                 self.blob_mesh = Some(create_sphere_mesh(
                     &self.device,
                     &self.queue,
-                    0.4, // Increased radius for better visibility
-                    16,
+                    0.5, // Increased radius for better visibility and easier grabbing
+                    20,  // More segments for smoother appearance
                     self.blob_position,
                     &self.material_layout,
                 ));
@@ -1044,23 +1191,42 @@ impl State {
     }
     
     // Update blob Y position (for scroll during drag)
+    // This adjusts the distance from model by changing Y, which affects the horizontal radius
     #[wasm_bindgen(js_name = "updateBlobY")]
     pub fn update_blob_y(&mut self, delta_y: f32) {
-        if self.blob_exists {
+        if self.blob_exists && self.blob_dragging {
             // Adjust Y position (closer/further from model)
             // Positive delta = move up (further), negative = move down (closer)
-            let y_change = delta_y * 0.1; // Scale scroll sensitivity
-            self.blob_target_position.y = (self.blob_target_position.y + y_change).clamp(0.5, 15.0); // Limit Y range
+            let y_change = -delta_y * 0.005; // Scale scroll sensitivity (negative for natural scroll direction)
+            let new_y = (self.blob_target_position.y + y_change).clamp(
+                self.model_center.y - 2.0, // Can go below model
+                self.model_center.y + 10.0  // Can go well above model
+            );
+            self.blob_target_position.y = new_y;
+            
+            // When Y changes, the plane locking in update() will adjust the horizontal position
+            // to maintain the correct distance from model center
         }
     }
     
-    // Spawn light blob at top of scene
+    // Spawn light blob - auto-position at good distance from model
     #[wasm_bindgen(js_name = "spawnBlob")]
     pub fn spawn_blob(&mut self) {
         if !self.blob_exists {
             self.blob_exists = true;
-            self.blob_position = vec3(0.0, 5.0, 0.0); // Top of scene
-            self.blob_target_position = vec3(0.0, 5.0, 0.0); // Initialize target
+            
+            // Auto-position blob at good distance from model center
+            // Place it slightly above and to the side of the model
+            let spawn_distance = 4.0; // Good default distance
+            let spawn_height = self.model_center.y + 2.0; // Slightly above model center
+            let spawn_position = vec3(
+                self.model_center.x + spawn_distance,
+                spawn_height,
+                self.model_center.z + spawn_distance * 0.5
+            );
+            
+            self.blob_position = spawn_position;
+            self.blob_target_position = spawn_position; // Initialize target
             self.blob_light_enabled = true;
             self.blob_dragging = false;
             self.blob_drag_offset = Vec3::ZERO;
@@ -1069,11 +1235,22 @@ impl State {
             self.blob_mesh = Some(create_sphere_mesh(
                 &self.device,
                 &self.queue,
-                0.4, // Increased radius for better visibility
-                16,  // segments
+                0.5, // Increased radius for better visibility and easier grabbing
+                20,  // More segments for smoother appearance
                 self.blob_position,
                 &self.material_layout,
             ));
+            
+            // Initialize path tracking (path will be created when dragging starts)
+            // Don't create path mesh on spawn - only show it while dragging
+            let spawn_radius = {
+                let to_model = spawn_position - self.model_center;
+                let horizontal_dist = (to_model.x * to_model.x + to_model.z * to_model.z).sqrt();
+                horizontal_dist.max(2.0).min(8.0)
+            };
+            self.blob_path_last_radius = spawn_radius;
+            self.blob_path_last_y = -2.5; // Fixed Y position below model (will be used when dragging starts)
+            self.blob_orbital_path_mesh = None; // No path visible until dragging starts
             
             // Initialize blob light position
             self.blob_light_pos_3d = self.blob_position;
@@ -1088,6 +1265,7 @@ impl State {
     pub fn despawn_blob(&mut self) {
         self.blob_exists = false;
         self.blob_mesh = None;
+        self.blob_orbital_path_mesh = None;
         self.blob_dragging = false;
         // When blob is despawned, switch to cursor light (if dynamic light is active)
         // Otherwise light will be at default position
@@ -1140,8 +1318,20 @@ impl State {
             return false;
         }
         
-        // Use the same hover detection for drag start
-        if self.is_hovering_blob(mouse_x, mouse_y, screen_width, screen_height) {
+        // Inline hover detection to avoid borrowing conflicts
+        let is_hovering = {
+            let blob_screen = self.project_3d_to_screen(self.blob_position);
+            let mouse_norm_x = mouse_x / screen_width;
+            let mouse_norm_y = mouse_y / screen_height;
+            
+            let dist = ((blob_screen[0] - mouse_norm_x).powi(2) + (blob_screen[1] - mouse_norm_y).powi(2)).sqrt();
+            
+            // Larger threshold (15% of screen) for easier interaction
+            // Also check if blob is visible (not behind camera)
+            dist < 0.15 && blob_screen[0] > 0.0 && blob_screen[0] < 1.0 && blob_screen[1] > 0.0 && blob_screen[1] < 1.0
+        };
+        
+        if is_hovering {
             self.blob_dragging = true;
             // Initialize target position to current position to prevent jumping
             self.blob_target_position = self.blob_position;
@@ -1165,8 +1355,20 @@ impl State {
             return false;
         }
         
-        // Use the same hover detection for click
-        if self.is_hovering_blob(mouse_x, mouse_y, screen_width, screen_height) {
+        // Inline hover detection to avoid borrowing conflicts
+        let is_hovering = {
+            let blob_screen = self.project_3d_to_screen(self.blob_position);
+            let mouse_norm_x = mouse_x / screen_width;
+            let mouse_norm_y = mouse_y / screen_height;
+            
+            let dist = ((blob_screen[0] - mouse_norm_x).powi(2) + (blob_screen[1] - mouse_norm_y).powi(2)).sqrt();
+            
+            // Larger threshold (15% of screen) for easier interaction
+            // Also check if blob is visible (not behind camera)
+            dist < 0.15 && blob_screen[0] > 0.0 && blob_screen[0] < 1.0 && blob_screen[1] > 0.0 && blob_screen[1] < 1.0
+        };
+        
+        if is_hovering {
             // Only toggle if not already dragging (to avoid toggling on drag start)
             if !self.blob_dragging {
                 self.toggle_blob_light();
@@ -1385,9 +1587,9 @@ impl State {
             
             // Only render grid if audio is active (intensity > 0.01 to avoid noise)
             if audio_intensity > 0.01 {
-                render_pass.set_pipeline(&self.grid_pipeline);
-                // Grid layout is Group 0 (Audio) & 1 (Camera).
-                // These slots are already bound correctly from the "Global Groups" section above.
+            render_pass.set_pipeline(&self.grid_pipeline);
+            // Grid layout is Group 0 (Audio) & 1 (Camera).
+            // These slots are already bound correctly from the "Global Groups" section above.
                 // Updated to match new GRID_SIZE: 200 * 200 * 6 vertices (200x200 quads, 6 vertices per quad)
                 render_pass.draw(0..(200 * 200 * 6), 0..1);
             }
@@ -1415,6 +1617,15 @@ impl State {
                     render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                     render_pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
                 }
+            }
+            
+            // Draw Orbital Path (if blob exists) - rendered as line ring
+            if let Some(path_mesh) = &self.blob_orbital_path_mesh {
+                render_pass.set_pipeline(&self.line_pipeline);
+                render_pass.set_bind_group(3, &path_mesh.material_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, path_mesh.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(path_mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..path_mesh.num_indices, 0, 0..1);
             }
             
             // Draw Light Blob (if exists) - rendered as opaque sphere
@@ -1573,10 +1784,10 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
         push_constant_ranges: &[],
     });
 
-    // Grid Pipeline Layout (Only Audio & Camera)
+    // Grid Pipeline Layout (Audio, Camera, and Light - needed for theme detection)
     let grid_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Grid Pipeline Layout"),
-        bind_group_layouts: &[&audio_layout, &camera_layout],
+        bind_group_layouts: &[&audio_layout, &camera_layout, &light_layout],
         push_constant_ranges: &[],
     });
 
@@ -1607,6 +1818,25 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
         vertex: wgpu::VertexState { module: &shader, entry_point: "vs_model", buffers: &[ModelVertex::desc()], compilation_options: Default::default() },
         fragment: Some(wgpu::FragmentState { module: &shader, entry_point: "fs_model", targets: &[Some(wgpu::ColorTargetState { format: config.format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }),
         primitive: wgpu::PrimitiveState { cull_mode: Some(wgpu::Face::Back), ..Default::default() }, 
+        depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: false, depth_compare: wgpu::CompareFunction::Less, stencil: Default::default(), bias: Default::default() }),
+        multisample: wgpu::MultisampleState { count: actual_sample_count, mask: !0, alpha_to_coverage_enabled: false },
+        multiview: None
+    });
+
+    // Line pipeline for orbital path (uses same shader and layout as model pipeline)
+    let line_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Line Pipeline"), layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState { module: &shader, entry_point: "vs_model", buffers: &[ModelVertex::desc()], compilation_options: Default::default() },
+        fragment: Some(wgpu::FragmentState { module: &shader, entry_point: "fs_model", targets: &[Some(wgpu::ColorTargetState { format: config.format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }),
+        primitive: wgpu::PrimitiveState { 
+            topology: wgpu::PrimitiveTopology::LineList, // Use LineList for line segments
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None, // Don't cull lines
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        }, 
         depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: false, depth_compare: wgpu::CompareFunction::Less, stencil: Default::default(), bias: Default::default() }),
         multisample: wgpu::MultisampleState { count: actual_sample_count, mask: !0, alpha_to_coverage_enabled: false },
         multiview: None
@@ -1694,7 +1924,7 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
     Ok(State {
         surface, device: Rc::new(device), queue: Rc::new(queue), config, depth_texture, depth_view,
         msaa_texture, msaa_view, sample_count: actual_sample_count,
-        grid_pipeline, opaque_pipeline, transparent_pipeline, sky_pipeline,
+        grid_pipeline, opaque_pipeline, transparent_pipeline, line_pipeline, sky_pipeline,
         mipmap_pipeline_linear: Rc::new(mipmap_pipeline_linear),
         mipmap_pipeline_srgb: Rc::new(mipmap_pipeline_srgb),
         mipmap_bind_group_layout: Rc::new(mipmap_bind_group_layout),
@@ -1708,6 +1938,9 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
         blob_target_position: vec3(0.0, 5.0, 0.0), // Target for smooth interpolation
         blob_light_enabled: true,
         blob_mesh: None,
+        blob_orbital_path_mesh: None,
+        blob_path_last_radius: 0.0,
+        blob_path_last_y: 0.0,
         blob_dragging: false,
         blob_drag_offset: Vec3::ZERO,
         model: None, model_center: Vec3::ZERO, material_layout, texture_cache: HashMap::new(), tx, rx

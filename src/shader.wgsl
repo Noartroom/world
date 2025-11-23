@@ -118,24 +118,19 @@ fn vs_grid(@builtin(vertex_index) in_vertex_index: u32) -> GridVertexOutput {
     // Store grid coordinates for fragment shader
     out.grid_coord = vec2<f32>(x_raw, y_raw);
     
-    // Sound wave deformation - multiple frequencies for complex wave patterns
+    // Sound wave deformation - slower, smoother waves
     let dist = sqrt(x*x + z_grid*z_grid);
-    let time = audio.intensity * 10.0;
+    let time = audio.intensity * 2.0; // Reduced from 10.0 for slower movement
     
-    // Multiple wave frequencies for complex interference patterns
-    let wave1 = sin(dist * 3.0 - time * 2.0) * 0.3;
-    let wave2 = sin(dist * 5.0 - time * 3.0) * 0.2;
-    let wave3 = sin(dist * 7.0 + time * 1.5) * 0.15;
+    // Single, slower radial wave pattern (simplified for smoother appearance)
+    let wave = sin(dist * 1.5 - time * 0.5) * 0.2; // Reduced frequency and amplitude
     
-    // Radial wave pattern
-    let radial_wave = (wave1 + wave2 + wave3) * audio.intensity;
+    // Subtle directional waves (much slower)
+    let x_wave = sin(x * 2.0 - time * 0.3) * 0.1 * audio.intensity;
+    let z_wave = sin(z_grid * 2.0 - time * 0.3) * 0.1 * audio.intensity;
     
-    // Directional waves (X and Z axis)
-    let x_wave = sin(x * 4.0 - time * 2.5) * 0.2 * audio.intensity;
-    let z_wave = sin(z_grid * 4.0 - time * 2.5) * 0.2 * audio.intensity;
-    
-    // Combine all wave effects
-    let y_deformation = radial_wave + x_wave + z_wave;
+    // Combine wave effects (much more subtle)
+    let y_deformation = (wave + x_wave + z_wave) * audio.intensity;
     
     let world_pos = vec3<f32>(x, GRID_Y + y_deformation, z_grid);
     out.world_pos = world_pos;
@@ -176,25 +171,52 @@ fn fs_grid(in: GridVertexOutput) -> @location(0) vec4<f32> {
         // Line intensity based on audio and wave propagation - increased base visibility
         let line_intensity = 0.6 + wave_intensity * 0.8 + audio.intensity * 0.5;
         
-        // Color shifts slightly with audio intensity (cool white to cyan)
-        // More visible colors for both light and dark themes
-        let base_color = vec3<f32>(0.8, 0.9, 1.0); // Brighter cool white/cyan
-        let pulse_color = vec3<f32>(0.5, 0.95, 1.0); // Brighter cyan on pulse
+        // Theme-aware colors: Use ambient color as hint for theme
+        // Dark theme: ambient is very dark (0.02-0.03), Light theme: ambient is brighter (0.15)
+        let is_dark_theme = light.ambient_color.r < 0.1;
+        
+        // Color shifts slightly with audio intensity
+        // Dark theme: bright cool white/cyan (visible on dark background)
+        // Light theme: darker blue/cyan (visible on light background)
+        var base_color: vec3<f32>;
+        var pulse_color: vec3<f32>;
+        var glow_color: vec3<f32>;
+        var base_alpha: f32;
+        var min_alpha: f32;
+        var color_mult: f32;
+        
+        if (is_dark_theme) {
+            // Dark theme: bright colors
+            base_color = vec3<f32>(0.8, 0.9, 1.0); // Bright cool white/cyan
+            pulse_color = vec3<f32>(0.5, 0.95, 1.0); // Brighter cyan on pulse
+            glow_color = vec3<f32>(0.3, 0.6, 0.9); // Cyan glow
+            base_alpha = 0.5;
+            min_alpha = 0.4;
+            color_mult = 0.7;
+        } else {
+            // Light theme: darker, more saturated colors for visibility
+            base_color = vec3<f32>(0.2, 0.4, 0.7); // Darker blue/cyan
+            pulse_color = vec3<f32>(0.1, 0.5, 0.9); // Brighter blue on pulse
+            glow_color = vec3<f32>(0.1, 0.3, 0.6); // Darker blue glow
+            base_alpha = 0.7; // Higher alpha for light theme
+            min_alpha = 0.6;
+            color_mult = 0.8;
+        }
         
         color = mix(base_color, pulse_color, wave_intensity) * line_intensity;
         
-        // Increased alpha for better visibility - minimum 0.5, up to 1.0
-        alpha = fade * (0.5 + wave_intensity * 0.3 + audio.intensity * 0.2);
+        // Increased alpha for better visibility - theme-aware
+        alpha = fade * (base_alpha + wave_intensity * 0.3 + audio.intensity * 0.2);
         alpha = min(alpha, 1.0);
         
         // Add subtle glow effect on wave peaks
         let glow = wave_intensity * 0.4;
-        color += vec3<f32>(0.3, 0.6, 0.9) * glow;
+        color += glow_color * glow;
         
         // Ensure minimum visibility even without audio
         if (audio.intensity < 0.1) {
-            alpha = max(alpha, 0.4 * fade);
-            color = base_color * 0.7;
+            alpha = max(alpha, min_alpha * fade);
+            color = base_color * color_mult;
         }
     }
     
