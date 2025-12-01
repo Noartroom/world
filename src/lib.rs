@@ -11,6 +11,58 @@ use wasm_bindgen_futures::JsFuture;
 use js_sys::{Uint8Array, Array};
 use std::panic;
 use instant;
+use rapier3d::prelude::*;
+
+// --- PHYSICS STATE ---
+struct PhysicsState {
+    rigid_body_set: RigidBodySet,
+    collider_set: ColliderSet,
+    integration_parameters: IntegrationParameters,
+    physics_pipeline: PhysicsPipeline,
+    island_manager: IslandManager,
+    broad_phase: BroadPhase,
+    narrow_phase: NarrowPhase,
+    impulse_joint_set: ImpulseJointSet,
+    multibody_joint_set: MultibodyJointSet,
+    ccd_solver: CCDSolver,
+    gravity: Vector<Real>,
+}
+
+impl PhysicsState {
+    fn new() -> Self {
+        Self {
+            rigid_body_set: RigidBodySet::new(),
+            collider_set: ColliderSet::new(),
+            integration_parameters: IntegrationParameters::default(),
+            physics_pipeline: PhysicsPipeline::new(),
+            island_manager: IslandManager::new(),
+            broad_phase: BroadPhase::new(),
+            narrow_phase: NarrowPhase::new(),
+            impulse_joint_set: ImpulseJointSet::new(),
+            multibody_joint_set: MultibodyJointSet::new(),
+            ccd_solver: CCDSolver::new(),
+            gravity: vector![0.0, -9.81, 0.0],
+        }
+    }
+
+    fn step(&mut self) {
+        self.physics_pipeline.step(
+            &self.gravity,
+            &self.integration_parameters,
+            &mut self.island_manager,
+            &mut self.broad_phase,
+            &mut self.narrow_phase,
+            &mut self.rigid_body_set,
+            &mut self.collider_set,
+            &mut self.impulse_joint_set,
+            &mut self.multibody_joint_set,
+            &mut self.ccd_solver,
+            None,
+            &(),
+            &(),
+        );
+    }
+}
 
 // --- CONSTANTS ---
 // OPTIMIZATION: 4x MSAA for SOTA quality
@@ -40,7 +92,8 @@ struct CameraUniform {
 struct LightUniform {
     position: [f32; 4],
     color: [f32; 4],
-    ambient_color: [f32; 4]
+    sky_color: [f32; 4],
+    ground_color: [f32; 4],
 }
 
 // NEW: Uniform to move the blob cheaply on GPU
@@ -289,6 +342,7 @@ struct Mesh {
     center: Vec3, // For sorting transparent meshes
     aabb_min: Vec3, // Axis-aligned bounding box minimum
     aabb_max: Vec3, // Axis-aligned bounding box maximum
+    collider_handle: Option<ColliderHandle>,
 }
 
 struct Model {
@@ -374,6 +428,7 @@ fn create_sphere_mesh(device: &wgpu::Device, queue: &wgpu::Queue, radius: f32, s
         diffuse_index: None, normal_index: None, mr_index: None,
         diffuse_view: Rc::new(emissive_texture.view), normal_view: Rc::new(white_normal.view), mr_view: Rc::new(smooth_texture.view),
         sampler, center: Vec3::ZERO, aabb_min: Vec3::splat(-radius), aabb_max: Vec3::splat(radius),
+        collider_handle: None,
     }
 }
 
@@ -468,6 +523,11 @@ pub struct State {
     light_pos_3d: Vec3, cursor_light_pos_3d: Vec3, cursor_light_active: bool, blob_light_pos_3d: Vec3,
     is_dark_theme: bool,
     
+    // Base colors for lighting (modified by theme or manual override)
+    base_light_color: [f32; 4],
+    base_sky_color: [f32; 4],
+    base_ground_color: [f32; 4],
+    
     blob_exists: bool,
     blob_position: Vec3,
     blob_target_position: Vec3,
@@ -476,6 +536,10 @@ pub struct State {
     blob_dragging: bool,
     blob_drag_depth: f32,
     
+    // Physics System
+    physics: PhysicsState,
+    blob_body_handle: Option<RigidBodyHandle>,
+
     // Model System
     model: Option<Model>,
     material_layout: wgpu::BindGroupLayout,
@@ -725,11 +789,33 @@ impl State {
     #[wasm_bindgen(js_name = "setTheme")]
     pub fn set_theme(&mut self, is_dark: bool) {
         self.is_dark_theme = is_dark;
+        
+        if is_dark {
+            // Dark theme defaults
+            self.base_light_color = [0.95, 0.97, 1.0, 1.0]; // Cool white
+            self.base_sky_color = [0.05, 0.05, 0.1, 1.0]; // Dark blue-ish sky
+            self.base_ground_color = [0.01, 0.01, 0.02, 1.0]; // Very dark ground
+        } else {
+            // Light theme defaults
+            self.base_light_color = [1.0, 0.98, 0.95, 1.0]; // Warm white
+            self.base_sky_color = [0.9, 0.9, 0.95, 1.0]; // Bright sky
+            self.base_ground_color = [0.2, 0.2, 0.2, 1.0]; // Grey ground
+        }
+
         web_sys::console::log_1(&format!("Theme updated to: {}", if is_dark { "Dark" } else { "Light" }).into());
         // Update lighting immediately based on theme
         self.update_theme_lighting();
     }
     
+    #[wasm_bindgen(js_name = "setEnvironmentLight")]
+    pub fn set_environment_light(&mut self, sky_r: f32, sky_g: f32, sky_b: f32, ground_r: f32, ground_g: f32, ground_b: f32, light_r: f32, light_g: f32, light_b: f32) {
+        self.base_sky_color = [sky_r, sky_g, sky_b, 1.0];
+        self.base_ground_color = [ground_r, ground_g, ground_b, 1.0];
+        self.base_light_color = [light_r, light_g, light_b, 1.0];
+        // Don't log every frame, it kills performance
+        self.update_theme_lighting();
+    }
+
     #[wasm_bindgen(js_name = "setCursorLightActive")]
     pub fn set_cursor_light_active(&mut self, active: bool) {
         self.cursor_light_active = active;
@@ -757,7 +843,7 @@ impl State {
         self.update_theme_lighting();
     }
     
-    // Update lighting colors based on current theme (no audio influence)
+    // Update lighting colors based on current state (base colors + intensity boosts)
     // Determines which light to use: blob light (if exists and enabled) OR cursor light (if dynamic light active)
     fn update_theme_lighting(&mut self) {
         let light_pos = self.light_pos_3d;
@@ -773,37 +859,23 @@ impl State {
         let cursor_additional_boost = if cursor_active && !blob_active { 1.1 } else { 0.0 }; // Extra boost for cursor light when it's the only active light
         let intensity_boost = base_intensity_boost + blob_additional_boost + cursor_additional_boost;
         
-        if self.is_dark_theme {
-            // Dark theme: Cool, subtle lighting (blue-white tones)
-            // Ambient: Very dark blue-gray (static, no audio)
-            // Main light: Cool white with slight blue tint (boosted when blob is active)
-            let base_color: [f32; 4] = [0.95, 0.97, 1.0, 1.0]; // Cool white
-            self.scene_uniform.light = LightUniform {
-                position: [light_pos.x, light_pos.y, light_pos.z, 1.0],
-                color: [
-                    (base_color[0] * intensity_boost).min(3.0f32), // Allow values > 1.0 for HDR-like effect
-                    (base_color[1] * intensity_boost).min(3.0f32),
-                    (base_color[2] * intensity_boost).min(3.0f32),
-                    1.0
-                ],
-                ambient_color: [0.02, 0.02, 0.03, 1.0] // Static ambient (no audio pulse)
-            };
-        } else {
-            // Light theme: Warm, bright lighting (yellow-white tones)
-            // Ambient: Light warm gray (static, no audio)
-            // Main light: Warm white with slight yellow tint (boosted when blob is active)
-            let base_color: [f32; 4] = [1.0, 0.98, 0.95, 1.0]; // Warm white
-            self.scene_uniform.light = LightUniform {
-                position: [light_pos.x, light_pos.y, light_pos.z, 1.0],
-                color: [
-                    (base_color[0] * intensity_boost).min(2.5f32), // Allow values > 1.0 for HDR-like effect
-                    (base_color[1] * intensity_boost).min(2.5f32),
-                    (base_color[2] * intensity_boost).min(2.5f32),
-                    1.0
-                ],
-                ambient_color: [0.15, 0.15, 0.15, 1.0] // Static ambient (no audio pulse)
-            };
-        }
+        // Use stored base colors (set by theme or JS override)
+        let base_color = self.base_light_color;
+        
+        // Apply intensity boost to the main light color
+        let max_intensity = if self.is_dark_theme { 3.0 } else { 2.5 };
+        
+        self.scene_uniform.light = LightUniform {
+            position: [light_pos.x, light_pos.y, light_pos.z, 1.0],
+            color: [
+                (base_color[0] * intensity_boost).min(max_intensity),
+                (base_color[1] * intensity_boost).min(max_intensity),
+                (base_color[2] * intensity_boost).min(max_intensity),
+                1.0
+            ],
+            sky_color: self.base_sky_color,
+            ground_color: self.base_ground_color,
+        };
     }
     
 
@@ -900,6 +972,17 @@ impl State {
 
                                     let center = (min + max) * 0.5;
 
+                                    // Physics Collider
+                                    let collider_verts: Vec<Point<Real>> = vertices.iter()
+                                        .map(|v| Point::new(v.position[0], v.position[1], v.position[2]))
+                                        .collect();
+                                    
+                                    let collider_handle = if let Some(collider) = ColliderBuilder::convex_hull(&collider_verts) {
+                                        Some(self.physics.collider_set.insert(collider))
+                                    } else {
+                                        None
+                                    };
+
                                     let v_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                                         label: Some("Mesh Vertex Buffer"),
                                         contents: bytemuck::cast_slice(&vertices),
@@ -991,6 +1074,7 @@ impl State {
                                         center,
                                         aabb_min: min,
                                         aabb_max: max,
+                                        collider_handle,
                                     };
 
                                     match mat.alpha_mode() {
@@ -1455,6 +1539,22 @@ impl State {
         result
     }
 
+    // Project 3D blob position to 2D screen coordinates for CSS UI repulsion
+    #[wasm_bindgen(js_name = "getBlobScreenPosition")]
+    pub fn get_blob_screen_position(&self) -> Array {
+        if !self.blob_exists {
+            return Array::new(); // Return empty if no blob
+        }
+        
+        let screen_pos = self.project_3d_to_screen(self.blob_position);
+        
+        // Return as JS array [x, y]
+        let result = Array::new_with_length(2);
+        result.set(0, JsValue::from_f64(screen_pos[0] as f64));
+        result.set(1, JsValue::from_f64(screen_pos[1] as f64));
+        result
+    }
+
     pub fn render(&mut self) {
         // 0. Handle Async Texture Loads
         while let Ok(msg) = self.rx.try_recv() {
@@ -1771,12 +1871,18 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
     // --- Buffers & Layouts ---
 
     // 0. Scene Uniform (Consolidated)
+    // Initial colors for Dark Theme (default)
+    let base_light = [0.95, 0.97, 1.0, 1.0];
+    let base_sky = [0.05, 0.05, 0.1, 1.0];
+    let base_ground = [0.01, 0.01, 0.02, 1.0];
+
     let scene_uniform = SceneUniform {
         camera: CameraUniform { view_proj: Mat4::IDENTITY.to_cols_array_2d(), inv_view_proj: Mat4::IDENTITY.to_cols_array_2d(), camera_pos: [0.0; 4] },
         light: LightUniform {
             position: [5.0, 5.0, 5.0, 1.0],
-            color: [0.95, 0.97, 1.0, 1.0], // Cool white for dark theme
-            ambient_color: [0.02, 0.02, 0.03, 1.0] // Dark ambient for dark theme
+            color: base_light,
+            sky_color: base_sky,
+            ground_color: base_ground,
         },
         audio: AudioUniform { intensity: 0.0, balance: 0.0, _pad1: 0.0, _pad2: 0.0 },
         blob: BlobUniform { position: [0.0; 4], color: [1.0; 4] },
@@ -1961,6 +2067,9 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
         camera_target: Vec3::ZERO, camera_radius: 10.0, camera_azimuth: 0.0, camera_polar: 1.57,
         light_pos_3d: vec3(2.0, 2.0, 2.0), cursor_light_pos_3d: vec3(2.0, 2.0, 2.0), cursor_light_active: true, blob_light_pos_3d: Vec3::ZERO,
         is_dark_theme: true, // Default to dark theme
+        base_light_color: base_light,
+        base_sky_color: base_sky,
+        base_ground_color: base_ground,
         blob_exists: false,
         blob_position: vec3(0.0, 1000.0, 0.0), // Start far away to avoid visual glitch
         blob_target_position: vec3(0.0, 1000.0, 0.0),
@@ -1968,6 +2077,8 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
         blob_mesh,
         blob_dragging: false,
         blob_drag_depth: 0.0,
+        physics: PhysicsState::new(),
+        blob_body_handle: None,
         model: None, model_center: Vec3::ZERO, model_extent: 2.0, material_layout, texture_cache: HashMap::new(), tx, rx
     })
 }

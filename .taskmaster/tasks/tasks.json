@@ -38,22 +38,42 @@
       },
       {
         "id": 4,
-        "title": "Phase 3: Physics - Implement Shockwave Transition",
-        "description": "Implement Physics with Rapier or similar.",
-        "details": "Search for 'Rapier physics WASM demos'. Implement navigation by physics effects.\n\n**Refinement Loop:**\n1. Critique: Evaluate physics realism and 'feel'.\n2. Optimize: Use ECS for high object counts (10k+).\n3. Polish: Add spring physics and increased particle counts.\n\n**Performance Guardrails:**\n- Maintain 30fps minimum before downgrading Tier.",
-        "testStrategy": "",
+        "title": "Phase 1: Stabilization - Core Optimization",
+        "description": "Implement critical optimizations for SOTA performance.",
+        "details": "- Fix WGPU v24 `limits` and `cache` structs.\n- Implement `BlobUniform` to stop mesh recreation lag.\n- Finalize `load_model_from_bytes` using the low-level parser fix.",
+        "testStrategy": "Verify consistent 60fps during blob movement and model loading.",
+        "status": "done",
+        "dependencies": ["2"],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 5,
+        "title": "Phase 2: Integration - Time & Physics Sync",
+        "description": "Connect the physical world (Time, Cursor) to the digital world.",
+        "details": "- Connect JS Date() to Rust `set_environment_light`.\n- Connect Rust `get_blob_screen_position` to HTML UI repulsion logic.\n- Update Renderer.astro to drive Time-of-Day lighting from JS.\n- Update Renderer.astro to use Blob Screen Position for UI effects.",
+        "testStrategy": "Verify lighting changes with time/simulated time. Verify UI elements move away from the blob.",
         "status": "pending",
-        "dependencies": [
-          "3"
-        ],
+        "dependencies": ["4"],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 6,
+        "title": "Phase 3: Polish - Atmospheric Perfection",
+        "description": "Final visual tuning for the 'Dreamworld' aesthetic.",
+        "details": "- Tune the 'Hemispheric' light gradient to perfectly match the CSS background.\n- Add 'Soft Shadows' (simulated via darkened ground ambient color).",
+        "testStrategy": "Visual inspection of blending between 3D and DOM layers.",
+        "status": "pending",
+        "dependencies": ["5"],
         "priority": "medium",
         "subtasks": []
       }
     ],
     "metadata": {
       "created": "2025-11-21T19:43:27.080Z",
-      "description": "Updated tasks based on PRD",
-      "updated": "2025-11-21T23:09:26.136Z"
+      "description": "Updated tasks based on PRD Roadmap",
+      "updated": "2025-12-01T23:20:00.000Z"
     }
   }
 }

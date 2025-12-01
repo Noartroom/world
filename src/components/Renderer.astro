@@ -26,7 +26,6 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
 </div>
 
 <script>
-  // @ts-ignore
   import init, { startRenderer } from '/pkg/model_renderer.js?v=gpu_fix_6';
   import { theme, activeModel, onSet, isDynamicLightActive, isBlobActive } from '../lib/stores/sceneStore';
   import { getAudioData, getStereoData, getComprehensiveAudioAnalysis } from '../lib/stores/audioStore';
@@ -46,6 +45,9 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
   let blobUnsub: (() => void) | null = null;
   let modelUnsub: (() => void) | null = null;
   let isLoadingModel = false; // Prevent concurrent model loads
+
+  // Time-of-Day State
+  let timeInterval: NodeJS.Timeout | null = null;
 
   // Performance Monitoring (SOTA Guardrails)
   let lastFrameTime = performance.now();
@@ -192,6 +194,34 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
              console.warn("Audio Update Error (Non-fatal):", audioErr);
         }
 
+        // --- PHASE 2: UI Repulsion (Blob -> UI) ---
+        // Get blob position from Rust and push UI elements away
+        if (state.getBlobScreenPosition) {
+            if (isBlobActive.get()) {
+                try {
+                    const blobPos = state.getBlobScreenPosition();
+                    // Check if we got a valid position (array length 2)
+                    if (blobPos && blobPos.length === 2) {
+                        const x = blobPos[0];
+                        const y = blobPos[1];
+                        
+                        // Only apply if inside screen bounds
+                        if (x >= 0 && x <= 1 && y >= 0 && y <= 1) {
+                             // Apply magnetic repulsion to UI elements
+                             applyUIRepulsion(x, y);
+                        } else {
+                             resetUIRepulsion();
+                        }
+                    }
+                } catch (err) {
+                    // Ignore transient errors
+                }
+            } else {
+                // Reset if blob is not active
+                resetUIRepulsion();
+            }
+        }
+
         state.render();
       } catch (e) {
         console.error("Render Crash:", e);
@@ -200,6 +230,120 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
       }
     }
     rafId = requestAnimationFrame(renderLoop);
+  }
+
+  // --- UI Repulsion Logic ---
+  function applyUIRepulsion(normalizedX: number, normalizedY: number) {
+      // Find UI elements to repel (buttons, panels)
+      const elements = document.querySelectorAll('.magnetic-ui');
+      
+      elements.forEach(el => {
+          if (!(el instanceof HTMLElement)) return;
+          
+          const rect = el.getBoundingClientRect();
+          const centerX = rect.left + rect.width / 2;
+          const centerY = rect.top + rect.height / 2;
+          
+          const blobX = normalizedX * window.innerWidth;
+          const blobY = normalizedY * window.innerHeight;
+          
+          const dx = centerX - blobX;
+          const dy = centerY - blobY;
+          const dist = Math.sqrt(dx*dx + dy*dy);
+          
+          const maxDist = 150; // Reduced radius to avoid accidental triggers
+          
+          if (dist < maxDist) {
+              // Calculate repulsion force with smooth easing
+              // Power function makes the falloff sharper, so effects only happen when closer
+              const intensity = Math.pow(1 - dist / maxDist, 2);
+              const force = intensity * 40; // Max 40px push
+              const angle = Math.atan2(dy, dx);
+              
+              const moveX = Math.cos(angle) * force;
+              const moveY = Math.sin(angle) * force;
+              
+              el.style.transform = `translate(${moveX}px, ${moveY}px)`;
+          } else {
+              el.style.transform = `translate(0px, 0px)`;
+          }
+      });
+  }
+
+  function resetUIRepulsion() {
+      const elements = document.querySelectorAll('.magnetic-ui');
+      elements.forEach(el => {
+          if (el instanceof HTMLElement) {
+              el.style.transform = `translate(0px, 0px)`;
+          }
+      });
+  }
+
+  // --- Time-of-Day System ---
+  function updateTimeOfDay() {
+      if (!state || !state.setEnvironmentLight) return;
+      
+      const now = new Date();
+      // Calculate normalized time (0.0 - 1.0) based on hours and minutes
+      // 0.0 = midnight, 0.5 = noon, 1.0 = midnight next day
+      const hours = now.getHours();
+      const minutes = now.getMinutes();
+      const time = (hours * 60 + minutes) / 1440;
+      
+      // Interpolate colors based on time
+      // Sunrise (6am - 0.25), Noon (12pm - 0.5), Sunset (6pm - 0.75), Night
+      
+      let sky = { r: 0, g: 0, b: 0 };
+      let ground = { r: 0, g: 0, b: 0 };
+      let light = { r: 0, g: 0, b: 0 };
+      
+      if (time < 0.25) { // Night -> Sunrise
+          const t = time / 0.25;
+          // Night: Dark Blue -> Sunrise: Orange/Pink
+          sky = lerpColor({r:0.05, g:0.05, b:0.1}, {r:0.8, g:0.5, b:0.4}, t);
+          ground = lerpColor({r:0.01, g:0.01, b:0.02}, {r:0.2, g:0.15, b:0.1}, t);
+          light = lerpColor({r:0.2, g:0.2, b:0.4}, {r:1.0, g:0.8, b:0.6}, t);
+      } else if (time < 0.5) { // Sunrise -> Noon
+          const t = (time - 0.25) / 0.25;
+          // Sunrise -> Blue Sky
+          sky = lerpColor({r:0.8, g:0.5, b:0.4}, {r:0.4, g:0.7, b:1.0}, t);
+          ground = lerpColor({r:0.2, g:0.15, b:0.1}, {r:0.2, g:0.3, b:0.2}, t); // Earthy tone
+          light = lerpColor({r:1.0, g:0.8, b:0.6}, {r:1.0, g:1.0, b:0.95}, t); // Warm -> Bright White
+      } else if (time < 0.75) { // Noon -> Sunset
+          const t = (time - 0.5) / 0.25;
+          // Blue Sky -> Sunset
+          sky = lerpColor({r:0.4, g:0.7, b:1.0}, {r:0.9, g:0.4, b:0.2}, t);
+          ground = lerpColor({r:0.2, g:0.3, b:0.2}, {r:0.2, g:0.1, b:0.05}, t);
+          light = lerpColor({r:1.0, g:1.0, b:0.95}, {r:1.0, g:0.6, b:0.3}, t); // Bright White -> Golden
+      } else { // Sunset -> Night
+          const t = (time - 0.75) / 0.25;
+          // Sunset -> Night
+          sky = lerpColor({r:0.9, g:0.4, b:0.2}, {r:0.05, g:0.05, b:0.1}, t);
+          ground = lerpColor({r:0.2, g:0.1, b:0.05}, {r:0.01, g:0.01, b:0.02}, t);
+          light = lerpColor({r:1.0, g:0.6, b:0.3}, {r:0.2, g:0.2, b:0.4}, t);
+      }
+      
+      state.setEnvironmentLight(
+          sky.r, sky.g, sky.b,
+          ground.r, ground.g, ground.b,
+          light.r, light.g, light.b
+      );
+      
+      // Update CSS gradient to match
+      if (container) {
+          const cssGradient = `linear-gradient(to bottom, 
+              rgb(${Math.floor(sky.r*255)}, ${Math.floor(sky.g*255)}, ${Math.floor(sky.b*255)}) 0%, 
+              rgb(${Math.floor(ground.r*255)}, ${Math.floor(ground.g*255)}, ${Math.floor(ground.b*255)}) 100%)`;
+          container.style.background = cssGradient;
+      }
+  }
+  
+  function lerpColor(c1: any, c2: any, t: number) {
+      return {
+          r: c1.r + (c2.r - c1.r) * t,
+          g: c1.g + (c2.g - c1.g) * t,
+          b: c1.b + (c2.b - c1.b) * t
+      };
   }
 
   // --- Initialization ---
@@ -218,6 +362,10 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
             if (state) state.setTheme(newValue === 'dark');
         });
       }
+      
+      // 1.1 Time-of-Day Sync
+      updateTimeOfDay(); // Initial update
+      timeInterval = setInterval(updateTimeOfDay, 60000); // Update every minute
 
       // 1.5 Dynamic Light Sync
       // Cursor-directed 3D lighting is enabled by default (controlled by isDynamicLightActive)
@@ -522,6 +670,7 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
     if (themeUnsub) themeUnsub();
     if (lightUnsub) lightUnsub();
     if (modelUnsub) modelUnsub();
+    if (timeInterval) clearInterval(timeInterval);
     
     if (state && state.free) state.free();
     state = null;

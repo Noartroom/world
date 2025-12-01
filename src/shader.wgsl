@@ -14,7 +14,8 @@ struct CameraUniform {
 struct LightUniform {
     position: vec4<f32>,
     color: vec4<f32>,
-    ambient_color: vec4<f32>,
+    sky_color: vec4<f32>,
+    ground_color: vec4<f32>,
 };
 
 // NEW: Uniform for the Blob position
@@ -183,9 +184,9 @@ fn fs_grid(in: GridVertexOutput) -> @location(0) vec4<f32> {
         // Line intensity based on audio and wave propagation - increased base visibility
         let line_intensity = 0.6 + wave_intensity * 0.8 + scene.audio.intensity * 0.5;
         
-        // Theme-aware colors: Use ambient color as hint for theme
-        // Dark theme: ambient is very dark (0.02-0.03), Light theme: ambient is brighter (0.15)
-        let is_dark_theme = scene.light.ambient_color.r < 0.1;
+        // Theme-aware colors: Use sky color as hint for theme
+        // Dark theme: sky is dark, Light theme: sky is brighter
+        let is_dark_theme = scene.light.sky_color.r < 0.1;
         
         // Color shifts slightly with audio intensity
         // Dark theme: bright cool white/cyan (visible on dark background)
@@ -386,11 +387,17 @@ fn fs_model(in: ModelOutput) -> @location(0) vec4<f32> {
         
     let Lo = (kD * albedo / PI + specular) * radiance * NdotL;
 
-    // Ambient / Emission
-    let ambient = scene.light.ambient_color.rgb * albedo * occlusion;
+    // Ambient (Hemispheric)
+    // Blend between ground and sky color based on normal Y
+    let up = vec3<f32>(0.0, 1.0, 0.0);
+    let w = 0.5 * (dot(N, up) + 1.0);
+    let ambient_light = mix(scene.light.ground_color.rgb, scene.light.sky_color.rgb, w);
+    
+    let ambient = ambient_light * albedo * occlusion;
+    
     // Add emission for blob visibility (if material is highly emissive/metallic)
     // This makes the blob glow even when not directly lit
-    let emission = albedo * metallic * 0.5; // Emissive glow based on material properties 
+    let emission = albedo * metallic * 0.5; // Emissive glow based on material properties
 
     let color = ambient + Lo + emission;
     
