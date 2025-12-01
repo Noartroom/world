@@ -3,20 +3,18 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlCanvasElement, ImageBitmap, Blob, BlobPropertyBag, CanvasRenderingContext2d};
 use wgpu::util::DeviceExt;
-use glam::{vec2, vec3, vec4, Mat4, Vec2, Vec3, Vec4, Quat};
+use glam::{vec2, vec3, vec4, Mat4, Vec3, Vec4, Quat};
 use std::rc::Rc;
 use std::collections::{HashMap, HashSet};
 use flume::{Sender, Receiver};
 use wasm_bindgen_futures::JsFuture;
 use js_sys::{Uint8Array, Array};
-
-#[cfg(feature = "console_error_panic_hook")]
 use std::panic;
+use instant;
 
 // --- CONSTANTS ---
-// MSAA: 1x (Disabled) to avoid "Tex storage 2D multisample is not supported" error on some WebGL implementations
-// Note: If robust MSAA detection is added later, this can be increased.
-const SAMPLE_COUNT: u32 = 1;
+// OPTIMIZATION: 4x MSAA for SOTA quality
+const SAMPLE_COUNT: u32 = 4;
 
 // --- Uniforms ---
 
@@ -45,8 +43,25 @@ struct LightUniform {
     ambient_color: [f32; 4]
 }
 
-// --- Vertex Data ---
+// NEW: Uniform to move the blob cheaply on GPU
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct BlobUniform {
+    position: [f32; 4],
+    color: [f32; 4],
+}
 
+// NEW: Consolidated Scene Uniform to reduce bind groups
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct SceneUniform {
+    camera: CameraUniform,
+    light: LightUniform,
+    audio: AudioUniform,
+    blob: BlobUniform,
+}
+
+// --- Vertex Data ---
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct ModelVertex {
@@ -128,43 +143,77 @@ impl Texture {
             view_formats: &[],
         });
 
-        // Try efficient WebGPU path first (copy_external_image_to_texture)
-        // This is much faster than the canvas fallback as it avoids CPU-side pixel data copying
-        // Note: copy_external_image_to_texture doesn't return Result in wgpu 0.20, it panics on error
-        // So we use a try-catch approach via wasm-bindgen or just always use fallback for safety
-        // For now, we'll use the fallback method which works reliably on both WebGPU and WebGL2
-        let use_fallback = true; // Always use fallback for now - copy_external_image_to_texture API is complex
+        // Use conditional compilation to attempt zero-copy upload on wasm32,
+        // with a robust fallback for other platforms or failures.
+        let mut uploaded = false;
 
-        // Fallback method that works on both WebGPU and WebGL2
-        if use_fallback {
-            let window = web_sys::window().unwrap();
-            let document = window.document().unwrap();
-            let canvas = document.create_element("canvas").unwrap().dyn_into::<HtmlCanvasElement>().unwrap();
-            canvas.set_width(width);
-            canvas.set_height(height);
-            
-            let ctx = canvas.get_context("2d").unwrap().unwrap().dyn_into::<CanvasRenderingContext2d>().unwrap();
-            ctx.draw_image_with_image_bitmap(&bitmap, 0.0, 0.0).unwrap();
-            
-            let image_data = ctx.get_image_data(0.0, 0.0, width as f64, height as f64).unwrap();
-            let data = image_data.data();
-            let bytes = data.to_vec();
+        #[cfg(target_arch = "wasm32")]
+        {
+            // The `copy_external_image_to_texture` feature might not be available
+            // on all wasm targets, so we still treat it as a potential failure point.
+            let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                queue.copy_external_image_to_texture(
+                    &wgpu::ImageCopyExternalImage {
+                        source: wgpu::ExternalImageSource::ImageBitmap(bitmap.clone()),
+                        origin: wgpu::Origin2d::ZERO,
+                        flip_y: false,
+                    },
+                    wgpu::ImageCopyTextureTagged {
+                        texture: &texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                        color_space: wgpu::PredefinedColorSpace::Srgb,
+                        premultiplied_alpha: false,
+                    },
+                    size,
+                );
+            }));
 
-            queue.write_texture(
-                wgpu::ImageCopyTexture {
-                    texture: &texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &bytes,
-                wgpu::ImageDataLayout {
-                    offset: 0,
-                    bytes_per_row: Some(4 * width),
-                    rows_per_image: Some(height),
-                },
-                size,
-            );
+            if result.is_ok() {
+                uploaded = true;
+            } else {
+                web_sys::console::warn_1(&"copy_external_image_to_texture failed, falling back to canvas upload".into());
+            }
+        }
+
+        if !uploaded {
+            // Fallback for non-wasm platforms or if the zero-copy method fails.
+            // This path is now taken if the compilation target is not wasm32,
+            // or if the `copy_external_image_to_texture` call panics.
+            if let Some(window) = web_sys::window() {
+                if let Some(document) = window.document() {
+                    if let Ok(canvas_element) = document.create_element("canvas") {
+                        if let Ok(canvas) = canvas_element.dyn_into::<HtmlCanvasElement>() {
+                            canvas.set_width(width);
+                            canvas.set_height(height);
+                            
+                            if let Ok(Some(context)) = canvas.get_context("2d").map(|v| v.and_then(|c| c.dyn_into::<CanvasRenderingContext2d>().ok())) {
+                                if context.draw_image_with_image_bitmap(&bitmap, 0.0, 0.0).is_ok() {
+                                    if let Ok(image_data) = context.get_image_data(0.0, 0.0, width as f64, height as f64) {
+                                        let data = image_data.data();
+                                        queue.write_texture(
+                                            wgpu::ImageCopyTexture {
+                                                texture: &texture,
+                                                mip_level: 0,
+                                                origin: wgpu::Origin3d::ZERO,
+                                                aspect: wgpu::TextureAspect::All,
+                                            },
+                                            &data,
+                                            wgpu::ImageDataLayout {
+                                                offset: 0,
+                                                bytes_per_row: Some(4 * width),
+                                                rows_per_image: Some(height),
+                                            },
+                                            size,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Generate mipmaps if pipeline is provided
@@ -247,56 +296,40 @@ struct Model {
     transparent_meshes: Vec<Mesh>,
 }
 
-// Generate a light bulb mesh for the light blob
-// Generate a simple sphere mesh for the light blob
-fn create_sphere_mesh(device: &wgpu::Device, queue: &wgpu::Queue, radius: f32, segments: u32, position: Vec3, material_layout: &wgpu::BindGroupLayout) -> Mesh {
+// Optimized: Generates at origin (0,0,0). Position applied via Uniform.
+fn create_sphere_mesh(device: &wgpu::Device, queue: &wgpu::Queue, radius: f32, segments: u32, material_layout: &wgpu::BindGroupLayout) -> Mesh {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
     let mut indices = Vec::new();
     
-    // Generate sphere vertices
     for i in 0..=segments {
         let theta = (i as f32 / segments as f32) * std::f32::consts::PI;
         let sin_theta = theta.sin();
         let cos_theta = theta.cos();
-        
         for j in 0..=segments {
             let phi = (j as f32 / segments as f32) * 2.0 * std::f32::consts::PI;
             let sin_phi = phi.sin();
             let cos_phi = phi.cos();
-            
             let x = cos_phi * sin_theta;
             let y = cos_theta;
             let z = sin_phi * sin_theta;
-            
-            // Transform to blob position
-            positions.push([x * radius + position.x, y * radius + position.y, z * radius + position.z]);
+            positions.push([x * radius, y * radius, z * radius]); // Origin
             normals.push([x, y, z]);
             uvs.push([j as f32 / segments as f32, i as f32 / segments as f32]);
         }
     }
     
-    // Generate indices
     for i in 0..segments {
         for j in 0..segments {
             let first = (i * (segments + 1) + j) as u32;
             let second = first + segments + 1;
-            
-            indices.push(first);
-            indices.push(second);
-            indices.push(first + 1);
-            
-            indices.push(second);
-            indices.push(second + 1);
-            indices.push(first + 1);
+            indices.push(first); indices.push(second); indices.push(first + 1);
+            indices.push(second); indices.push(second + 1); indices.push(first + 1);
         }
     }
     
-    // Compute tangents
     let tangents = compute_tangents(&positions, &normals, &uvs, &indices);
-    
-    // Create vertex buffer
     let mut vertices = Vec::new();
     for i in 0..positions.len() {
         vertices.push(ModelVertex {
@@ -308,35 +341,19 @@ fn create_sphere_mesh(device: &wgpu::Device, queue: &wgpu::Queue, radius: f32, s
     }
     
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Blob Vertex Buffer"),
-        contents: bytemuck::cast_slice(&vertices),
-        usage: wgpu::BufferUsages::VERTEX,
+        label: Some("Blob Vertex Buffer"), contents: bytemuck::cast_slice(&vertices), usage: wgpu::BufferUsages::VERTEX,
     });
-    
     let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Blob Index Buffer"),
-        contents: bytemuck::cast_slice(&indices),
-        usage: wgpu::BufferUsages::INDEX,
+        label: Some("Blob Index Buffer"), contents: bytemuck::cast_slice(&indices), usage: wgpu::BufferUsages::INDEX,
     });
     
-    // Create highly emissive material for glowing blob (bright yellow-white)
-    let emissive_texture = Texture::single_pixel(device, queue, [255, 255, 200, 255], true); // Bright yellow-white
-    let smooth_texture = Texture::single_pixel(device, queue, [0, 0, 0, 255], false); // Black = smooth (low roughness)
+    let emissive_texture = Texture::single_pixel(device, queue, [255, 255, 200, 255], true);
+    let smooth_texture = Texture::single_pixel(device, queue, [0, 0, 0, 255], false);
     let white_normal = Texture::single_pixel(device, queue, [128, 128, 255, 255], false);
     
     let sampler = Rc::new(device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("Blob Sampler"),
-        address_mode_u: wgpu::AddressMode::ClampToEdge,
-        address_mode_v: wgpu::AddressMode::ClampToEdge,
-        address_mode_w: wgpu::AddressMode::ClampToEdge,
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::FilterMode::Linear,
-        lod_min_clamp: 0.0,
-        lod_max_clamp: 100.0,
-        compare: None,
-        anisotropy_clamp: 1,
-        border_color: None,
+        mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, mipmap_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
     }));
     
     let material_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -346,31 +363,17 @@ fn create_sphere_mesh(device: &wgpu::Device, queue: &wgpu::Queue, radius: f32, s
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&white_normal.view) },
             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&sampler) },
-            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&smooth_texture.view) }, // Metallic-roughness: smooth for reflection
+            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&smooth_texture.view) },
             wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&sampler) },
         ],
         label: None,
     });
     
-    // Calculate AABB for sphere
-    let aabb_min = position - Vec3::splat(radius);
-    let aabb_max = position + Vec3::splat(radius);
-    
     Mesh {
-        vertex_buffer,
-        index_buffer,
-        num_indices: indices.len() as u32,
-        material_bind_group,
-        diffuse_index: None,
-        normal_index: None,
-        mr_index: None,
-        diffuse_view: Rc::new(emissive_texture.view),
-        normal_view: Rc::new(white_normal.view),
-        mr_view: Rc::new(smooth_texture.view),
-        sampler,
-        center: position,
-        aabb_min,
-        aabb_max,
+        vertex_buffer, index_buffer, num_indices: indices.len() as u32, material_bind_group,
+        diffuse_index: None, normal_index: None, mr_index: None,
+        diffuse_view: Rc::new(emissive_texture.view), normal_view: Rc::new(white_normal.view), mr_view: Rc::new(smooth_texture.view),
+        sampler, center: Vec3::ZERO, aabb_min: Vec3::splat(-radius), aabb_max: Vec3::splat(radius),
     }
 }
 
@@ -440,49 +443,41 @@ pub struct State {
     grid_pipeline: wgpu::RenderPipeline,
     opaque_pipeline: wgpu::RenderPipeline,
     transparent_pipeline: wgpu::RenderPipeline,
+    blob_pipeline: wgpu::RenderPipeline, // NEW PIPELINE for blob
     mipmap_pipeline_linear: Rc<wgpu::RenderPipeline>,
     mipmap_pipeline_srgb: Rc<wgpu::RenderPipeline>,
     mipmap_bind_group_layout: Rc<wgpu::BindGroupLayout>,
     
     // Resources
-    audio_buffer: wgpu::Buffer,
-    audio_bind_group: wgpu::BindGroup,
+    scene_uniform: SceneUniform,
+    scene_buffer: wgpu::Buffer,
+    scene_bind_group: wgpu::BindGroup,
+
     audio_data: Vec<u8>,
     cached_audio_intensity: f32, // Cached audio intensity to avoid redundant calculations
     
-    camera_buffer: wgpu::Buffer,
-    camera_bind_group: wgpu::BindGroup,
     // Camera State (Polar coordinates)
     camera_target: Vec3,
     camera_radius: f32,
     camera_azimuth: f32,
     camera_polar: f32,
     
+    model_center: Vec3, // Center of the model
     model_extent: f32, // Maximum extent of the model (for orbital path sizing)
-
-    light_buffer: wgpu::Buffer,
-    light_bind_group: wgpu::BindGroup,
-    light_pos_3d: Vec3, // 3D scene light position (blob light OR cursor light, whichever is active)
-    cursor_light_pos_3d: Vec3, // Cursor-directed light position (for CSS projection and 3D when dynamic light active)
-    cursor_light_active: bool, // Track if cursor light should be active (controlled by dynamic light toggle)
-    blob_light_pos_3d: Vec3, // Blob light position (independent, always active when blob exists and enabled)
-    #[allow(dead_code)]
-    light_pos_2d: Vec2,
-    is_dark_theme: bool, // Track theme for lighting
     
-    // Light Blob (Physical 3D Object)
+    light_pos_3d: Vec3, cursor_light_pos_3d: Vec3, cursor_light_active: bool, blob_light_pos_3d: Vec3,
+    is_dark_theme: bool,
+    
     blob_exists: bool,
     blob_position: Vec3,
-    blob_target_position: Vec3, // Target position for smooth interpolation
+    blob_target_position: Vec3,
     blob_light_enabled: bool,
-    blob_mesh: Option<Mesh>,
+    blob_mesh: Mesh, // OPTIMIZATION: Stored by value, created once
     blob_dragging: bool,
-    blob_drag_offset: Vec3, // Offset from blob center when drag started
-    blob_drag_depth: f32, // Stable depth for dragging (prevents jumping)
+    blob_drag_depth: f32,
     
     // Model System
     model: Option<Model>,
-    model_center: Vec3, // Center position of the loaded model (for gravitational attraction)
     material_layout: wgpu::BindGroupLayout,
     texture_cache: HashMap<usize, Rc<wgpu::TextureView>>,
     tx: Sender<AssetMessage>,
@@ -642,6 +637,10 @@ impl State {
         queue.submit(std::iter::once(encoder.finish()));
     }
 
+    fn update_scene_uniforms(&mut self) {
+        self.queue.write_buffer(&self.scene_buffer, 0, bytemuck::cast_slice(&[self.scene_uniform]));
+    }
+
     fn update_camera_uniforms(&mut self) {
         let x = self.camera_radius * self.camera_polar.sin() * self.camera_azimuth.sin();
         let y = self.camera_radius * self.camera_polar.cos();
@@ -653,12 +652,11 @@ impl State {
         let view_proj = proj * view;
         let inv_view_proj = view_proj.inverse();
 
-        let uniform = CameraUniform {
+        self.scene_uniform.camera = CameraUniform {
             view_proj: view_proj.to_cols_array_2d(),
             inv_view_proj: inv_view_proj.to_cols_array_2d(),
             camera_pos: [pos.x, pos.y, pos.z, 1.0],
         };
-        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[uniform]));
     }
 
     // Frustum culling: Check if AABB is visible in camera frustum
@@ -735,15 +733,10 @@ impl State {
     #[wasm_bindgen(js_name = "setCursorLightActive")]
     pub fn set_cursor_light_active(&mut self, active: bool) {
         self.cursor_light_active = active;
-        // Reset cursor light position when disabled to prevent it from staying at last position
-        if !active {
-            self.cursor_light_pos_3d = vec3(0.0, 2.0, 0.0); // Reset to default position
-        } else {
-            // When enabled, initialize to a reasonable position near the model center
-            // This will be updated on next mouse move, but ensures light is visible immediately
-            self.cursor_light_pos_3d = self.model_center + vec3(2.0, 2.0, 2.0);
-        }
-        // Immediately recalculate the final light position based on current state
+        
+        // Immediately recalculate the final light position based on current state.
+        // By not resetting cursor_light_pos_3d here, it will retain its last known
+        // position, preventing a visual jump when the light is toggled on.
         let blob_active = self.blob_exists && self.blob_light_enabled;
         let cursor_active = self.cursor_light_active;
         
@@ -760,7 +753,7 @@ impl State {
             // Neither active - use default position (center, above model)
             self.light_pos_3d = vec3(0.0, 5.0, 0.0);
         }
-        // Update lighting immediately
+        // Update lighting immediately and write to buffer
         self.update_theme_lighting();
     }
     
@@ -785,7 +778,7 @@ impl State {
             // Ambient: Very dark blue-gray (static, no audio)
             // Main light: Cool white with slight blue tint (boosted when blob is active)
             let base_color: [f32; 4] = [0.95, 0.97, 1.0, 1.0]; // Cool white
-            let light_uniform = LightUniform {
+            self.scene_uniform.light = LightUniform {
                 position: [light_pos.x, light_pos.y, light_pos.z, 1.0],
                 color: [
                     (base_color[0] * intensity_boost).min(3.0f32), // Allow values > 1.0 for HDR-like effect
@@ -795,13 +788,12 @@ impl State {
                 ],
                 ambient_color: [0.02, 0.02, 0.03, 1.0] // Static ambient (no audio pulse)
             };
-            self.queue.write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&[light_uniform]));
         } else {
             // Light theme: Warm, bright lighting (yellow-white tones)
             // Ambient: Light warm gray (static, no audio)
             // Main light: Warm white with slight yellow tint (boosted when blob is active)
             let base_color: [f32; 4] = [1.0, 0.98, 0.95, 1.0]; // Warm white
-            let light_uniform = LightUniform {
+            self.scene_uniform.light = LightUniform {
                 position: [light_pos.x, light_pos.y, light_pos.z, 1.0],
                 color: [
                     (base_color[0] * intensity_boost).min(2.5f32), // Allow values > 1.0 for HDR-like effect
@@ -811,7 +803,6 @@ impl State {
                 ],
                 ambient_color: [0.15, 0.15, 0.15, 1.0] // Static ambient (no audio pulse)
             };
-            self.queue.write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&[light_uniform]));
         }
     }
     
@@ -1186,28 +1177,21 @@ impl State {
             // Use adaptive smoothing: much faster when dragging for immediate response, slower when not dragging
             let smoothing_factor = if self.blob_dragging {
                 0.8  // Much faster when dragging - almost direct following for responsiveness
-            } else { 
+            } else {
                 0.15 // Slower when not dragging - smooth, natural movement
             };
             let diff = self.blob_target_position - self.blob_position;
             self.blob_position = self.blob_position + diff * smoothing_factor;
             
-            // Only recreate mesh if position changed significantly (optimization)
-            if diff.length() > 0.005 {
-                self.blob_mesh = Some(create_sphere_mesh(
-                    &self.device,
-                    &self.queue,
-                    0.5, // Radius for the sphere
-                    20,  // Segments for smoother appearance
-                    self.blob_position,
-                    &self.material_layout,
-                ));
-            }
+            // PERFORMANCE FIX: Update Uniform Buffer instead of recreating Mesh!
+            self.scene_uniform.blob = BlobUniform {
+                position: [self.blob_position.x, self.blob_position.y, self.blob_position.z, 0.0],
+                color: [1.0, 1.0, 1.0, 1.0], // White default
+            };
             
             // Update blob light position (always track blob position)
             self.blob_light_pos_3d = self.blob_position;
         }
-        
         // Light position blending is handled in render() function
         // This ensures both blob and cursor lights can contribute simultaneously
     }
@@ -1231,44 +1215,49 @@ impl State {
         }
     }
     
-    // Spawn light blob - auto-position at good distance from model
+    // Spawn light blob at cursor position
     #[wasm_bindgen(js_name = "spawnBlob")]
-    pub fn spawn_blob(&mut self) {
+    pub fn spawn_blob(&mut self, mouse_x: f32, mouse_y: f32, screen_width: f32, screen_height: f32) {
         if !self.blob_exists {
-            self.blob_exists = true;
+            // Defer setting blob_exists to true until AFTER position is calculated
+            // Immediately position blob at cursor
+            let mouse_norm_x = (mouse_x / screen_width) * 2.0 - 1.0;
+            let mouse_norm_y = 1.0 - (mouse_y / screen_height) * 2.0;
+
+            let x = self.camera_radius * self.camera_polar.sin() * self.camera_azimuth.sin();
+            let y = self.camera_radius * self.camera_polar.cos();
+            let z = self.camera_radius * self.camera_polar.sin() * self.camera_azimuth.cos();
+            let cam_pos = vec3(x, y, z) + self.camera_target;
             
-            // Auto-position blob at good distance from model center
-            // Place it slightly above and to the side of the model
-            // Use model extent to ensure blob spawns outside the model
-            let base_radius = (self.model_extent * 0.5).max(3.0);
-            let spawn_distance = base_radius * 1.2; // 20% beyond base radius to ensure it's outside
-            let spawn_height = self.model_center.y + 2.0; // Slightly above model center
-            let spawn_position = vec3(
-                self.model_center.x + spawn_distance,
-                spawn_height,
-                self.model_center.z + spawn_distance * 0.5
-            );
+            let view = Mat4::look_at_rh(cam_pos, self.camera_target, Vec3::Y);
+            let proj = Mat4::perspective_rh(45.0_f32.to_radians(), screen_width / screen_height, 0.1, 100.0);
+            let inv_view_proj = (proj * view).inverse();
+
+            let near_point = inv_view_proj * vec4(mouse_norm_x, mouse_norm_y, 0.0, 1.0);
+            let far_point = inv_view_proj * vec4(mouse_norm_x, mouse_norm_y, 1.0, 1.0);
+            let near_world = vec3(near_point.x, near_point.y, near_point.z) / near_point.w;
+            let far_world = vec3(far_point.x, far_point.y, far_point.z) / far_point.w;
+            let ray_dir = (far_world - near_world).normalize();
             
+            // Place blob along ray, at a distance relative to model size
+            let spawn_distance = self.model_extent * 1.5;
+            let spawn_position = near_world + ray_dir * spawn_distance;
+
             self.blob_position = spawn_position;
-            self.blob_target_position = spawn_position; // Initialize target
+            self.blob_target_position = spawn_position;
             self.blob_light_enabled = true;
             self.blob_dragging = false;
-            self.blob_drag_offset = Vec3::ZERO;
-            
-            // Create sphere mesh for blob
-            self.blob_mesh = Some(create_sphere_mesh(
-                &self.device,
-                &self.queue,
-                0.5, // Radius for the sphere
-                20,  // Segments for smoother appearance
-                self.blob_position,
-                &self.material_layout,
-            ));
-            
-            // Initialize blob light position
             self.blob_light_pos_3d = self.blob_position;
-            // Light position blending is handled in render() function
+
+            // CRITICAL FIX: Update the scene uniform's blob position directly
+            // before enabling rendering and writing to the buffer.
+            self.scene_uniform.blob.position = [spawn_position.x, spawn_position.y, spawn_position.z, 0.0];
+            
+            // Now that position is set, enable rendering
+            self.blob_exists = true;
+
             self.update_theme_lighting();
+            self.update_scene_uniforms(); // This now writes the correct position
         }
     }
     
@@ -1276,7 +1265,7 @@ impl State {
     #[wasm_bindgen(js_name = "despawnBlob")]
     pub fn despawn_blob(&mut self) {
         self.blob_exists = false;
-        self.blob_mesh = None;
+        // self.blob_mesh = None; // OPTIMIZATION: Keep mesh
         self.blob_dragging = false;
         // Light position blending is handled in render() function
         // When blob is despawned, render() will automatically use cursor light
@@ -1335,12 +1324,11 @@ impl State {
             // Also check if blob is visible (not behind camera)
             dist < 0.15 && blob_screen[0] > 0.0 && blob_screen[0] < 1.0 && blob_screen[1] > 0.0 && blob_screen[1] < 1.0
         };
-        
+
         if is_hovering {
             self.blob_dragging = true;
             // Initialize target position to current position to prevent jumping
             self.blob_target_position = self.blob_position;
-            self.blob_drag_offset = Vec3::ZERO;
             
             // Calculate and store stable depth from current blob position
             // This prevents jumping when dragging starts
@@ -1512,8 +1500,7 @@ impl State {
         self.cached_audio_intensity = (avg_volume / 255.0).min(1.0);
 
         // 2. Update Audio Uniform (balance kept at 0.0 - not used for lighting)
-        let audio_uniform = AudioUniform { intensity: self.cached_audio_intensity, balance: 0.0, _pad1: 0.0, _pad2: 0.0 };
-        self.queue.write_buffer(&self.audio_buffer, 0, bytemuck::cast_slice(&[audio_uniform]));
+        self.scene_uniform.audio = AudioUniform { intensity: self.cached_audio_intensity, balance: 0.0, _pad1: 0.0, _pad2: 0.0 };
         
         // 3. Update lighting (ensure it's updated every frame)
         // Both blob light and cursor light can be active simultaneously
@@ -1529,22 +1516,19 @@ impl State {
         let blob_active = self.blob_exists && self.blob_light_enabled;
         let cursor_active = self.cursor_light_active;
         
-        // IMPORTANT: Only use cursor_light_pos_3d if cursor_light_active is true
-        // This ensures cursor light is completely disabled when toggled off
-        if blob_active && cursor_active {
-            // Both active - blend their positions
-            self.light_pos_3d = self.blob_light_pos_3d * 0.6 + self.cursor_light_pos_3d * 0.4;
-        } else if blob_active {
-            // Only blob light active - cursor light is completely ignored
+        // Decouple blob light from cursor light. If blob is active, it's the ONLY light source.
+        if blob_active {
             self.light_pos_3d = self.blob_light_pos_3d;
         } else if cursor_active {
-            // Only cursor light active
             self.light_pos_3d = self.cursor_light_pos_3d;
         } else {
-            // Neither active - use default position (center, above model)
+            // Fallback if no light is active
             self.light_pos_3d = vec3(0.0, 5.0, 0.0);
         }
         self.update_theme_lighting();
+
+        // Update the consolidated scene uniform buffer before drawing
+        self.update_scene_uniforms();
 
         // 3. Draw
         let output = match self.surface.get_current_texture() {
@@ -1586,10 +1570,8 @@ impl State {
                 timestamp_writes: None,
             });
 
-            // Bind Global Groups (Audio @ 0, Camera @ 1, Light @ 2)
-            render_pass.set_bind_group(0, &self.audio_bind_group, &[]);
-            render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
-            render_pass.set_bind_group(2, &self.light_bind_group, &[]);
+            // Bind Global Scene Uniforms (Group 0)
+            render_pass.set_bind_group(0, &self.scene_bind_group, &[]);
 
             // Draw Sky/Grid
             // Note: Grid pipeline needs to be updated to use Light group or ignore it
@@ -1615,10 +1597,8 @@ impl State {
             // Use cached audio intensity (calculated once at start of render)
             // Only render grid if audio is active (intensity > 0.01 to avoid noise)
             if self.cached_audio_intensity > 0.01 {
-            render_pass.set_pipeline(&self.grid_pipeline);
-            // Grid layout is Group 0 (Audio) & 1 (Camera).
-            // These slots are already bound correctly from the "Global Groups" section above.
-                // Updated to match new GRID_SIZE: 200 * 200 * 6 vertices (200x200 quads, 6 vertices per quad)
+                render_pass.set_pipeline(&self.grid_pipeline);
+                // Grid layout now just uses the scene uniform at group 0
                 render_pass.draw(0..(200 * 200 * 6), 0..1);
             }
             
@@ -1634,7 +1614,7 @@ impl State {
                         continue;
                     }
                     
-                    render_pass.set_bind_group(3, &mesh.material_bind_group, &[]);
+                    render_pass.set_bind_group(1, &mesh.material_bind_group, &[]);
                     render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                     render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                     render_pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
@@ -1666,24 +1646,23 @@ impl State {
                 
                 render_pass.set_pipeline(&self.transparent_pipeline);
                 for (mesh, _) in transparent_to_draw {
-                    render_pass.set_bind_group(3, &mesh.material_bind_group, &[]);
+                    render_pass.set_bind_group(1, &mesh.material_bind_group, &[]);
                     render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                     render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                     render_pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
                 }
             }
-            
-            // Draw Light Blob (if exists) - rendered as opaque sphere
-            // Note: No frustum culling for blob - it should always be visible when it exists
-            // to prevent it from disappearing during orbital movement
-            if let Some(blob_mesh) = &self.blob_mesh {
-                    render_pass.set_pipeline(&self.opaque_pipeline);
-                    render_pass.set_bind_group(3, &blob_mesh.material_bind_group, &[]);
-                    render_pass.set_vertex_buffer(0, blob_mesh.vertex_buffer.slice(..));
-                    render_pass.set_index_buffer(blob_mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                    // Note: Blob vertices are already transformed to blob_position when mesh is created/updated
-                    render_pass.draw_indexed(0..blob_mesh.num_indices, 0, 0..1);
+
+            // Draw Blob if it exists
+            if self.blob_exists {
+                render_pass.set_pipeline(&self.blob_pipeline);
+                // Bind scene uniforms at group 0 and material at group 1
+                render_pass.set_bind_group(1, &self.blob_mesh.material_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.blob_mesh.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(self.blob_mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..self.blob_mesh.num_indices, 0, 0..1);
             }
+            
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -1692,11 +1671,12 @@ impl State {
 }
 
 #[wasm_bindgen(js_name = "startRenderer")]
+#[allow(unreachable_code, unused_variables)]
 pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue> {
     #[cfg(feature = "console_error_panic_hook")]
     panic::set_hook(Box::new(console_error_panic_hook::hook));
 
-    web_sys::console::log_1(&"Initializing Advanced WGPU Renderer (No MSAA)...".into());
+    web_sys::console::log_1(&"Initializing Advanced WGPU Renderer...".into());
 
     let instance = wgpu::Instance::default();
     
@@ -1770,14 +1750,16 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
     };
     surface.configure(&device, &config);
     
-    // Detect actual MSAA support (WebGL2 may only support 1 sample)
-    // Since SAMPLE_COUNT is set to 1 to avoid WebGL errors, we just use that
-    // If MSAA is re-enabled in the future, proper detection would be needed
-    let actual_sample_count = SAMPLE_COUNT;
-    
-    // Note: MSAA detection via catch_unwind doesn't work reliably in WASM
-    // The safer approach is to set SAMPLE_COUNT to 1 for WebGL compatibility
-    // If MSAA > 1 is needed, it should be enabled only for WebGPU contexts
+    // Detect backend and adjust MSAA sample count accordingly.
+    // WebGL often doesn't support MSAA storage textures, causing a panic.
+    // By checking the backend, we can disable MSAA for WebGL and keep it for WebGPU.
+    let info = adapter.get_info();
+    let actual_sample_count = if info.backend == wgpu::Backend::Gl {
+        web_sys::console::warn_1(&"WebGL backend detected, disabling MSAA to prevent panic.".into());
+        1
+    } else {
+        SAMPLE_COUNT
+    };
     
     let (depth_texture, depth_view) = State::create_depth_texture(&device, &config, actual_sample_count);
     let (msaa_texture, msaa_view) = State::create_msaa_texture(&device, &config, actual_sample_count)
@@ -1788,35 +1770,45 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
 
     // --- Buffers & Layouts ---
 
-    // 0. Audio
-    let audio_uniform = AudioUniform { intensity: 0.0, balance: 0.0, _pad1: 0.0, _pad2: 0.0 };
-    let audio_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("Audio Buffer"), contents: bytemuck::cast_slice(&[audio_uniform]), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST });
-    let audio_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None }], label: Some("Audio Layout")
-    });
-    let audio_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { layout: &audio_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: audio_buffer.as_entire_binding() }], label: None });
-
-    // 1. Camera
-    let camera_uniform = CameraUniform { view_proj: Mat4::IDENTITY.to_cols_array_2d(), inv_view_proj: Mat4::IDENTITY.to_cols_array_2d(), camera_pos: [0.0; 4] };
-    let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("Camera Buffer"), contents: bytemuck::cast_slice(&[camera_uniform]), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST });
-    let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None }], label: Some("Camera Layout")
-    });
-    let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { layout: &camera_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: camera_buffer.as_entire_binding() }], label: None });
-
-    // 2. Light - Theme-based lighting (defaults to dark theme)
-    let light_uniform = LightUniform { 
-        position: [5.0, 5.0, 5.0, 1.0], 
-        color: [0.95, 0.97, 1.0, 1.0], // Cool white for dark theme
-        ambient_color: [0.02, 0.02, 0.03, 1.0] // Dark ambient for dark theme
+    // 0. Scene Uniform (Consolidated)
+    let scene_uniform = SceneUniform {
+        camera: CameraUniform { view_proj: Mat4::IDENTITY.to_cols_array_2d(), inv_view_proj: Mat4::IDENTITY.to_cols_array_2d(), camera_pos: [0.0; 4] },
+        light: LightUniform {
+            position: [5.0, 5.0, 5.0, 1.0],
+            color: [0.95, 0.97, 1.0, 1.0], // Cool white for dark theme
+            ambient_color: [0.02, 0.02, 0.03, 1.0] // Dark ambient for dark theme
+        },
+        audio: AudioUniform { intensity: 0.0, balance: 0.0, _pad1: 0.0, _pad2: 0.0 },
+        blob: BlobUniform { position: [0.0; 4], color: [1.0; 4] },
     };
-    let light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("Light Buffer"), contents: bytemuck::cast_slice(&[light_uniform]), usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST });
-    let light_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None }], label: Some("Light Layout")
+    let scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Scene Buffer"),
+        contents: bytemuck::cast_slice(&[scene_uniform]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
-    let light_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { layout: &light_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: light_buffer.as_entire_binding() }], label: None });
+    let scene_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+        label: Some("Scene Layout"),
+    });
+    let scene_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout: &scene_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: scene_buffer.as_entire_binding(),
+        }],
+        label: Some("Scene Bind Group"),
+    });
 
-    // 3. Material
+    // 1. Material
     let material_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         entries: &[
             wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { multisampled: false, view_dimension: wgpu::TextureViewDimension::D2, sample_type: wgpu::TextureSampleType::Float { filterable: true } }, count: None },
@@ -1829,16 +1821,16 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
     });
 
     // Pipeline Layout (Main)
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { 
-        label: Some("Main Pipeline Layout"), 
-        bind_group_layouts: &[&audio_layout, &camera_layout, &light_layout, &material_layout], 
-        push_constant_ranges: &[] 
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Main Pipeline Layout"),
+        bind_group_layouts: &[&scene_layout, &material_layout],
+        push_constant_ranges: &[],
     });
 
-    // Grid Pipeline Layout (Audio, Camera, and Light - needed for theme detection)
+    // Grid Pipeline Layout
     let grid_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Grid Pipeline Layout"),
-        bind_group_layouts: &[&audio_layout, &camera_layout, &light_layout],
+        bind_group_layouts: &[&scene_layout],
         push_constant_ranges: &[],
     });
 
@@ -1868,11 +1860,25 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
         label: Some("Transparent Pipeline"), layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState { module: &shader, entry_point: "vs_model", buffers: &[ModelVertex::desc()], compilation_options: Default::default() },
         fragment: Some(wgpu::FragmentState { module: &shader, entry_point: "fs_model", targets: &[Some(wgpu::ColorTargetState { format: config.format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }),
-        primitive: wgpu::PrimitiveState { cull_mode: Some(wgpu::Face::Back), ..Default::default() }, 
+        primitive: wgpu::PrimitiveState { cull_mode: Some(wgpu::Face::Back), ..Default::default() },
         depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: false, depth_compare: wgpu::CompareFunction::Less, stencil: Default::default(), bias: Default::default() }),
         multisample: wgpu::MultisampleState { count: actual_sample_count, mask: !0, alpha_to_coverage_enabled: false },
         multiview: None
     });
+
+    // NEW: Blob Pipeline (Uses vs_blob entry point)
+    let blob_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Blob Pipeline"), layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState { module: &shader, entry_point: "vs_blob", buffers: &[ModelVertex::desc()], compilation_options: Default::default() },
+        fragment: Some(wgpu::FragmentState { module: &shader, entry_point: "fs_model", targets: &[Some(wgpu::ColorTargetState { format: config.format, blend: None, write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }),
+        primitive: wgpu::PrimitiveState { cull_mode: Some(wgpu::Face::Back), ..Default::default() },
+        depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::Less, stencil: Default::default(), bias: Default::default() }),
+        multisample: wgpu::MultisampleState { count: actual_sample_count, mask: !0, alpha_to_coverage_enabled: false },
+        multiview: None
+    });
+
+    // Create static blob mesh (at 0,0,0)
+    let blob_mesh = create_sphere_mesh(&device, &queue, 0.5, 20, &material_layout);
 
     // Mipmap Generation Pipeline
     let mipmap_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1946,22 +1952,21 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
     Ok(State {
         surface, device: Rc::new(device), queue: Rc::new(queue), config, depth_texture, depth_view,
         msaa_texture, msaa_view, sample_count: actual_sample_count,
-        grid_pipeline, opaque_pipeline, transparent_pipeline,
+        grid_pipeline, opaque_pipeline, transparent_pipeline, blob_pipeline,
         mipmap_pipeline_linear: Rc::new(mipmap_pipeline_linear),
         mipmap_pipeline_srgb: Rc::new(mipmap_pipeline_srgb),
         mipmap_bind_group_layout: Rc::new(mipmap_bind_group_layout),
-        audio_buffer, audio_bind_group, audio_data: Vec::new(), cached_audio_intensity: 0.0,
-        camera_buffer, camera_bind_group,
+        scene_uniform, scene_buffer, scene_bind_group,
+        audio_data: Vec::new(), cached_audio_intensity: 0.0,
         camera_target: Vec3::ZERO, camera_radius: 10.0, camera_azimuth: 0.0, camera_polar: 1.57,
-        light_buffer, light_bind_group, light_pos_3d: Vec3::ZERO, cursor_light_pos_3d: Vec3::ZERO, cursor_light_active: true, blob_light_pos_3d: Vec3::ZERO, light_pos_2d: Vec2::ZERO,
+        light_pos_3d: vec3(2.0, 2.0, 2.0), cursor_light_pos_3d: vec3(2.0, 2.0, 2.0), cursor_light_active: true, blob_light_pos_3d: Vec3::ZERO,
         is_dark_theme: true, // Default to dark theme
         blob_exists: false,
-        blob_position: vec3(0.0, 5.0, 0.0), // Spawn at top of scene
-        blob_target_position: vec3(0.0, 5.0, 0.0), // Target for smooth interpolation
+        blob_position: vec3(0.0, 1000.0, 0.0), // Start far away to avoid visual glitch
+        blob_target_position: vec3(0.0, 1000.0, 0.0),
         blob_light_enabled: true,
-        blob_mesh: None,
+        blob_mesh,
         blob_dragging: false,
-        blob_drag_offset: Vec3::ZERO,
         blob_drag_depth: 0.0,
         model: None, model_center: Vec3::ZERO, model_extent: 2.0, material_layout, texture_cache: HashMap::new(), tx, rx
     })

@@ -39,8 +39,8 @@
       {
         "id": 4,
         "title": "Phase 3: Physics - Implement Shockwave Transition",
-        "description": "Implement the 'Shockwave' transition using Rapier or similar.",
-        "details": "Search for 'Rapier physics WASM demos'. Implement navigation shockwave effect pushing objects away.\n\n**Refinement Loop:**\n1. Critique: Evaluate physics realism and 'feel'.\n2. Optimize: Use ECS for high object counts (10k+).\n3. Polish: Add spring physics and increased particle counts.\n\n**Performance Guardrails:**\n- Maintain 30fps minimum before downgrading Tier.",
+        "description": "Implement Physics with Rapier or similar.",
+        "details": "Search for 'Rapier physics WASM demos'. Implement navigation by physics effects.\n\n**Refinement Loop:**\n1. Critique: Evaluate physics realism and 'feel'.\n2. Optimize: Use ECS for high object counts (10k+).\n3. Polish: Add spring physics and increased particle counts.\n\n**Performance Guardrails:**\n- Maintain 30fps minimum before downgrading Tier.",
         "testStrategy": "",
         "status": "pending",
         "dependencies": [

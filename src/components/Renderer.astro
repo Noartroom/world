@@ -26,6 +26,7 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
 </div>
 
 <script>
+  // @ts-ignore
   import init, { startRenderer } from '/pkg/model_renderer.js?v=gpu_fix_6';
   import { theme, activeModel, onSet, isDynamicLightActive, isBlobActive } from '../lib/stores/sceneStore';
   import { getAudioData, getStereoData, getComprehensiveAudioAnalysis } from '../lib/stores/audioStore';
@@ -54,7 +55,7 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
   let targetDpr = currentDpr;
 
   // DOM Elemente
-  const canvas = document.getElementById(CANVAS_ID);
+  const canvas: HTMLCanvasElement | null = CANVAS_ID ? document.getElementById(CANVAS_ID) as HTMLCanvasElement : null;
   const loader = document.getElementById('loader');
 
   // Input State
@@ -62,18 +63,21 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
   let lastX = 0;
   let lastY = 0;
   let isDraggingBlob = false;
+  let lastCanvasX = -1; // -1 indicates not yet set
+  let lastCanvasY = -1;
+  let hasSpawnedSinceActive = false; // Prevents re-spawning on every mouse move
   
   // Performance: Cache DOM queries and computed values
-  let cachedCanvasRect = null;
+  let cachedCanvasRect: DOMRect | null = null;
   let lastCachedRectTime = 0;
   const RECT_CACHE_DURATION = 100; // Cache rect for 100ms
   let cachedTheme = null;
   let cachedOverlayGradient = null;
 
   // --- SOTA Render Loop ---
-  function renderLoop(timestamp) {
+  function renderLoop(timestamp: number) {
     // 0. Safety: Stoppen, wenn Canvas nicht mehr im DOM ist (Astro View Transition)
-    if (!canvas.isConnected) {
+    if (!canvas || !canvas.isConnected) {
         cleanup();
         return;
     }
@@ -244,19 +248,18 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
                  state.despawnBlob();
              }
              isDraggingBlob = false;
-         } else if (newValue && state) {
-             // Spawn blob at top of scene
-             if (state.spawnBlob) {
-                 state.spawnBlob();
-             }
+             hasSpawnedSinceActive = false; // Reset spawn flag
+         } else if (newValue) {
+            // On activation, set flag to spawn on next mouse move
+            hasSpawnedSinceActive = false;
          }
       });
 
       // 1.6 Model Switching
       let isInitialLoad = true; // Track if we're doing the initial load
-      let currentLoadedModel = null; // Track currently loaded model
+      let currentLoadedModel: string | null = null; // Track currently loaded model
       
-      const loadModel = async (modelType) => {
+      const loadModel = async (modelType: string) => {
         // Prevent concurrent loads
         if (isLoadingModel) {
           console.log(`Model load already in progress, skipping ${modelType}`);
@@ -275,8 +278,8 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
           return;
         }
 
-        const modelPath = modelType === 'dark' 
-          ? '/models/dezimiertt-glb-03.glb' 
+        const modelPath = modelType === 'dark'
+          ? '/models/dezimiertt-glb-03.glb'
           : '/models/modernart1-sculpt-1.glb';
         
         isLoadingModel = true;
@@ -329,14 +332,14 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
       await loadModel(initialModel);
 
       // Subscribe to model changes (only after initial load is complete)
-      modelUnsub = onSet(activeModel, ({ newValue, oldValue }) => {
+      modelUnsub = onSet(activeModel, ({ newValue }) => {
         // Skip if this is the initial value being set or if already loading
         if (isInitialLoad || isLoadingModel) {
           return;
         }
         
         // Only load if state is ready and value actually changed
-        if (state && newValue !== oldValue && newValue !== currentLoadedModel) {
+        if (state && newValue !== currentLoadedModel) {
           loadModel(newValue);
         }
       });
@@ -348,20 +351,21 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
       // 4. Initial Resize erzwingen (Verhindert "Mini-Canvas" Blitz)
       triggerInitialResize();
 
-      renderLoop();
+      rafId = requestAnimationFrame(renderLoop);
 
-    } catch (e) {
+    } catch (e: any) {
       console.group("🔴 SOTA Renderer Error Log");
       console.error("Initialization failed. Details below:");
       if (e.stack) console.error("Stack:", e.stack);
       
       if (loader) loader.textContent = "GPU ERROR: " + e; // Zeige Fehler im UI an
       // Ensure we kill any zombie loops
-      cleanup(); 
+      cleanup();
     }
   }
 
   function triggerResize() {
+      if (!container || !canvas) return;
       // Manuelles Update, respektiert targetDpr
       currentDpr = targetDpr;
       const rect = container.getBoundingClientRect();
@@ -370,7 +374,7 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
       const width = Math.max(1, Math.floor(rect.width * currentDpr));
       const height = Math.max(1, Math.floor(rect.height * currentDpr));
       
-      if (state && width > 0 && height > 0) {
+      if (state && canvas && width > 0 && height > 0) {
           canvas.width = width;
           canvas.height = height;
           state.resize(width, height);
@@ -388,7 +392,7 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
       // Bei Container-Größenänderung (z.B. Fenstergröße) immer neu berechnen
       triggerResize();
     });
-    resizeObserver.observe(container);
+    if (container) resizeObserver.observe(container);
 
     // Intersection Observer (Pausiert Render Loop wenn unsichtbar)
     intersectionObserver = new IntersectionObserver((entries) => {
@@ -396,49 +400,19 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
         isVisible = entry.isIntersecting;
       });
     }, { threshold: 0 });
-    intersectionObserver.observe(canvas);
+    if (canvas) intersectionObserver.observe(canvas);
   }
 
   // --- Input Handling (Pointer Events) ---
   function setupInput() {
-    container.addEventListener('pointerdown', (e) => {
-      console.log("🖱️ Pointer Down auf Renderer");
-      isDragging = true;
-      lastX = e.clientX;
-      lastY = e.clientY;
-      
-      container.style.cursor = 'grabbing';
-      // WICHTIG: Input sperren, damit Drehen auch außerhalb des Fensters geht
-      container.setPointerCapture(e.pointerId);
-    });
-
-    window.addEventListener('pointerup', (e) => {
-      // Clear click timeout if dragging happened
-      if (blobClickTimeout) {
-        clearTimeout(blobClickTimeout);
-        blobClickTimeout = null;
-      }
-      
-      if (isDraggingBlob && state && state.stopDragBlob) {
-        state.stopDragBlob();
-        isDraggingBlob = false;
-      }
-      isDragging = false;
-      container.style.cursor = 'grab';
-      if (container.hasPointerCapture(e.pointerId)) {
-        container.releasePointerCapture(e.pointerId);
-      }
-    });
+    if (!container || !canvas) return;
     
-      // Handle blob click and drag start
-    let blobClickTimeout = null;
-    container.addEventListener('pointerdown', (e) => {
+    let blobClickTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    container.addEventListener('pointerdown', (e: PointerEvent) => {
       if (!state) return;
-      
-      // Only handle blob interactions if blob is active
+
       const blobActive = isBlobActive.get();
-      
-      // Cache rect for pointerdown as well
       const now = performance.now();
       if (!cachedCanvasRect || (now - lastCachedRectTime) > RECT_CACHE_DURATION) {
         cachedCanvasRect = canvas.getBoundingClientRect();
@@ -447,65 +421,45 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
       const rect = cachedCanvasRect;
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
-      
-      // Try to start dragging blob first (if near blob, allow dragging)
+
+      // Priority: 1. Start dragging blob
       if (blobActive && state.startDragBlob && state.startDragBlob(x, y, rect.width, rect.height)) {
         isDraggingBlob = true;
-        isDragging = false; // Don't drag camera when dragging blob
+        isDragging = false; // Prevent camera drag
         e.preventDefault();
         e.stopPropagation();
         container.setPointerCapture(e.pointerId);
         container.style.cursor = 'grabbing';
-        
-        // Store initial mouse position to detect drag movement
-        let dragStartX = e.clientX;
-        let dragStartY = e.clientY;
-        let hasDragged = false;
-        
-        // Set a timeout to toggle light on click (if no drag movement happens)
-        blobClickTimeout = setTimeout(() => {
-          // Only toggle if we haven't dragged significantly
-          if (!hasDragged && state.checkBlobClick) {
-            state.checkBlobClick(x, y, rect.width, rect.height);
-          }
-        }, 150); // Reduced delay for more responsive clicking
-        
-        // Track drag movement
-        const checkDrag = (moveEvent) => {
-          const dragDistance = Math.sqrt(
-            Math.pow(moveEvent.clientX - dragStartX, 2) + 
-            Math.pow(moveEvent.clientY - dragStartY, 2)
-          );
-          if (dragDistance > 5) { // 5px threshold to distinguish click from drag
-            hasDragged = true;
-            if (blobClickTimeout) {
-              clearTimeout(blobClickTimeout);
-              blobClickTimeout = null;
-            }
-            container.removeEventListener('pointermove', checkDrag);
-          }
-        };
-        container.addEventListener('pointermove', checkDrag, { once: false });
-        
-        // Clean up on pointer up
-        const cleanup = () => {
-          container.removeEventListener('pointermove', checkDrag);
-          container.removeEventListener('pointerup', cleanup);
-        };
-        container.addEventListener('pointerup', cleanup, { once: true });
-        
-        return;
       }
-      
-      // Otherwise, start camera drag
-      isDragging = true;
-      lastX = e.clientX;
-      lastY = e.clientY;
-      container.style.cursor = 'grabbing';
+      // Priority: 2. Start dragging camera
+      else {
+        isDragging = true;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        container.style.cursor = 'grabbing';
+        container.setPointerCapture(e.pointerId);
+      }
     });
 
-    container.addEventListener('pointermove', (e) => {
-      // Cache getBoundingClientRect() to avoid repeated expensive DOM queries
+    window.addEventListener('pointerup', (e: PointerEvent) => {
+      if (isDraggingBlob && state && state.stopDragBlob) {
+        state.stopDragBlob();
+        isDraggingBlob = false;
+      }
+      if (isDragging) {
+        isDragging = false;
+      }
+      if (container) {
+        container.style.cursor = 'grab';
+        if (container.hasPointerCapture(e.pointerId)) {
+          container.releasePointerCapture(e.pointerId);
+        }
+      }
+    });
+
+    container.addEventListener('pointermove', (e: PointerEvent) => {
+      if (!state || !canvas) return;
+
       const now = performance.now();
       if (!cachedCanvasRect || (now - lastCachedRectTime) > RECT_CACHE_DURATION) {
         cachedCanvasRect = canvas.getBoundingClientRect();
@@ -513,61 +467,48 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
       }
       const rect = cachedCanvasRect;
 
-      // If dragging blob, cancel click timeout
-      if (isDraggingBlob && blobClickTimeout) {
-        clearTimeout(blobClickTimeout);
-        blobClickTimeout = null;
-      }
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      lastCanvasX = x;
+      lastCanvasY = y;
 
-      if (state && isDragging && !isDraggingBlob) {
+      if (isDragging && !isDraggingBlob) {
         const deltaX = e.clientX - lastX;
         const deltaY = e.clientY - lastY;
-        
-        const sensitivity = 1.0;
-        state.update_camera(deltaX * sensitivity, deltaY * sensitivity, 0);
-
+        state.update_camera(deltaX * 1.0, deltaY * 1.0, 0);
         lastX = e.clientX;
         lastY = e.clientY;
       }
 
-      // Shader & CSS Overlay Update
-      if (state) {
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-        
-        // Update cursor based on blob hover state (visual feedback)
-        if (isBlobActive.get() && !isDraggingBlob && !isDragging) {
-          if (state.isHoveringBlob && state.isHoveringBlob(x, y, rect.width, rect.height)) {
-            container.style.cursor = 'grab';
-          } else {
-            container.style.cursor = 'default';
-          }
-        } else if (isDraggingBlob) {
-          container.style.cursor = 'grabbing';
+      // Spawn blob on first mouse move after activation
+      if (isBlobActive.get() && !hasSpawnedSinceActive && state.spawnBlob) {
+        state.spawnBlob(x, y, rect.width, rect.height);
+        hasSpawnedSinceActive = true;
+      }
+
+      const dynamicLightEnabled = isDynamicLightActive.get();
+      if (dynamicLightEnabled || isDraggingBlob) {
+        state.update(x, y, rect.width, rect.height);
+      }
+
+      if (isBlobActive.get() && !isDraggingBlob && !isDragging) {
+        if (state.isHoveringBlob && state.isHoveringBlob(x, y, rect.width, rect.height)) {
+          container.style.cursor = 'grab';
+        } else {
+          container.style.cursor = 'default';
         }
-        
-        // Update blob position if dragging (always works)
-        // Update cursor light position (always when dynamic light is active) and blob position (if dragging)
-        // These are independent - cursor light updates when dynamic light is enabled, blob updates when dragging
-        const dynamicLightEnabled = isDynamicLightActive.get();
-        if (dynamicLightEnabled || isDraggingBlob) {
-          // Always update when dynamic light is enabled (regardless of blob state)
-          // Also update when dragging blob (for blob position updates)
-          state.update(x, y, rect.width, rect.height);
-        }
+      } else if (isDraggingBlob) {
+        container.style.cursor = 'grabbing';
       }
     });
 
-    container.addEventListener('wheel', (e) => {
+    container.addEventListener('wheel', (e: WheelEvent) => {
       if (state) {
         e.preventDefault();
-        
-        // If dragging blob, use scroll to move blob closer/further (Y axis)
         if (isBlobActive.get() && isDraggingBlob && state.updateBlobY) {
           state.updateBlobY(e.deltaY);
         } else {
-          // Otherwise, scroll controls camera zoom
-          state.update_camera(0, 0, e.deltaY * 0.5); 
+          state.update_camera(0, 0, e.deltaY * 0.5);
         }
       }
     }, { passive: false });

@@ -17,17 +17,29 @@ struct LightUniform {
     ambient_color: vec4<f32>,
 };
 
-@group(0) @binding(0) var<uniform> audio: AudioUniform;
-@group(1) @binding(0) var<uniform> camera: CameraUniform;
-@group(2) @binding(0) var<uniform> light: LightUniform;
+// NEW: Uniform for the Blob position
+struct BlobUniform {
+    position: vec4<f32>,
+    color: vec4<f32>,
+};
 
-// Material Bindings (Group 3)
-@group(3) @binding(0) var t_diffuse: texture_2d<f32>;
-@group(3) @binding(1) var s_diffuse: sampler;
-@group(3) @binding(2) var t_normal: texture_2d<f32>;
-@group(3) @binding(3) var s_normal: sampler;
-@group(3) @binding(4) var t_mr: texture_2d<f32>; // Metallic-Roughness
-@group(3) @binding(5) var s_mr: sampler;
+// Consolidated scene uniforms
+struct SceneUniform {
+    camera: CameraUniform,
+    light: LightUniform,
+    audio: AudioUniform,
+    blob: BlobUniform,
+};
+
+@group(0) @binding(0) var<uniform> scene: SceneUniform;
+
+// Material Bindings (Group 1)
+@group(1) @binding(0) var t_diffuse: texture_2d<f32>;
+@group(1) @binding(1) var s_diffuse: sampler;
+@group(1) @binding(2) var t_normal: texture_2d<f32>;
+@group(1) @binding(3) var s_normal: sampler;
+@group(1) @binding(4) var t_mr: texture_2d<f32>; // Metallic-Roughness
+@group(1) @binding(5) var s_mr: sampler;
 
 // --- SKY RENDERER (Procedural Sky) ---
 // Renders a full-screen triangle
@@ -57,8 +69,8 @@ fn vs_sky(@builtin(vertex_index) in_vertex_index: u32) -> SkyOutput {
     // Let's try with standard x,y. If sky is upside down, we flip Y.
     let clip_pos = vec4<f32>(x, y, 1.0, 1.0);
     
-    let unproj = camera.inv_view_proj * clip_pos;
-    out.view_dir = normalize(unproj.xyz / unproj.w - camera.camera_pos.xyz);
+    let unproj = scene.camera.inv_view_proj * clip_pos;
+    out.view_dir = normalize(unproj.xyz / unproj.w - scene.camera.camera_pos.xyz);
     
     return out;
 }
@@ -73,7 +85,7 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     // Simple Day/Night mix based on light intensity or audio?
     // Let's use Audio to modulate sky color!
     let base_color = mix(vec3<f32>(0.02, 0.02, 0.05), vec3<f32>(0.1, 0.2, 0.4), t); // Dark Space -> Blueish
-    let beat_color = vec3<f32>(0.5, 0.2, 0.8) * audio.intensity;
+    let beat_color = vec3<f32>(0.5, 0.2, 0.8) * scene.audio.intensity;
     
     // Stars or noise could be added here
     
@@ -120,21 +132,21 @@ fn vs_grid(@builtin(vertex_index) in_vertex_index: u32) -> GridVertexOutput {
     
     // Sound wave deformation - slower, smoother waves
     let dist = sqrt(x*x + z_grid*z_grid);
-    let time = audio.intensity * 2.0; // Reduced from 10.0 for slower movement
+    let time = scene.audio.intensity * 2.0; // Reduced from 10.0 for slower movement
     
     // Single, slower radial wave pattern (simplified for smoother appearance)
     let wave = sin(dist * 1.5 - time * 0.5) * 0.2; // Reduced frequency and amplitude
     
     // Subtle directional waves (much slower)
-    let x_wave = sin(x * 2.0 - time * 0.3) * 0.1 * audio.intensity;
-    let z_wave = sin(z_grid * 2.0 - time * 0.3) * 0.1 * audio.intensity;
+    let x_wave = sin(x * 2.0 - time * 0.3) * 0.1 * scene.audio.intensity;
+    let z_wave = sin(z_grid * 2.0 - time * 0.3) * 0.1 * scene.audio.intensity;
     
     // Combine wave effects (much more subtle)
-    let y_deformation = (wave + x_wave + z_wave) * audio.intensity;
+    let y_deformation = (wave + x_wave + z_wave) * scene.audio.intensity;
     
     let world_pos = vec3<f32>(x, GRID_Y + y_deformation, z_grid);
     out.world_pos = world_pos;
-    out.clip_position = camera.view_proj * vec4<f32>(world_pos, 1.0);
+    out.clip_position = scene.camera.view_proj * vec4<f32>(world_pos, 1.0);
     
     return out;
 }
@@ -161,19 +173,19 @@ fn fs_grid(in: GridVertexOutput) -> @location(0) vec4<f32> {
     // Always show some grid lines, even when not on exact line (for smoother appearance)
     if (is_line > 0.1) {
         // Sound wave visualization - lines pulse and glow with audio
-        let time = audio.intensity * 10.0;
+        let time = scene.audio.intensity * 10.0;
         let wave_dist = length(in.world_pos.xz);
         
         // Wave propagation effect - concentric circles
         let wave_phase = fract(wave_dist * 0.5 - time * 0.5);
-        let wave_intensity = smoothstep(0.85, 1.0, wave_phase) * audio.intensity;
+        let wave_intensity = smoothstep(0.85, 1.0, wave_phase) * scene.audio.intensity;
         
         // Line intensity based on audio and wave propagation - increased base visibility
-        let line_intensity = 0.6 + wave_intensity * 0.8 + audio.intensity * 0.5;
+        let line_intensity = 0.6 + wave_intensity * 0.8 + scene.audio.intensity * 0.5;
         
         // Theme-aware colors: Use ambient color as hint for theme
         // Dark theme: ambient is very dark (0.02-0.03), Light theme: ambient is brighter (0.15)
-        let is_dark_theme = light.ambient_color.r < 0.1;
+        let is_dark_theme = scene.light.ambient_color.r < 0.1;
         
         // Color shifts slightly with audio intensity
         // Dark theme: bright cool white/cyan (visible on dark background)
@@ -206,7 +218,7 @@ fn fs_grid(in: GridVertexOutput) -> @location(0) vec4<f32> {
         color = mix(base_color, pulse_color, wave_intensity) * line_intensity;
         
         // Increased alpha for better visibility - theme-aware
-        alpha = fade * (base_alpha + wave_intensity * 0.3 + audio.intensity * 0.2);
+        alpha = fade * (base_alpha + wave_intensity * 0.3 + scene.audio.intensity * 0.2);
         alpha = min(alpha, 1.0);
         
         // Add subtle glow effect on wave peaks
@@ -214,7 +226,7 @@ fn fs_grid(in: GridVertexOutput) -> @location(0) vec4<f32> {
         color += glow_color * glow;
         
         // Ensure minimum visibility even without audio
-        if (audio.intensity < 0.1) {
+        if (scene.audio.intensity < 0.1) {
             alpha = max(alpha, min_alpha * fade);
             color = base_color * color_mult;
         }
@@ -274,17 +286,38 @@ struct ModelOutput {
 fn vs_model(model: ModelInput) -> ModelOutput {
     var out: ModelOutput;
     
-    // Vertices are already pre-transformed to World Space on the CPU
+    // STANDARD MODEL: No offset
     let world_pos = vec4<f32>(model.position, 1.0);
     out.world_pos = world_pos.xyz;
-    out.clip_position = camera.view_proj * world_pos;
+    out.clip_position = scene.camera.view_proj * world_pos;
     out.uv = model.uv;
     
-    // Normals are also pre-transformed
     out.normal = model.normal;
     out.normal_view = model.normal;
     
-    // Tangent reconstruction (pre-transformed)
+    out.tangent_view = model.tangent.xyz;
+    let N = normalize(model.normal);
+    let T = normalize(model.tangent.xyz);
+    out.bitangent_view = cross(N, T) * model.tangent.w;
+    
+    return out;
+}
+
+// NEW: Vertex shader specifically for the Blob
+@vertex
+fn vs_blob(model: ModelInput) -> ModelOutput {
+    var out: ModelOutput;
+    
+    // Apply Uniform Offset here (Cheap!)
+    let world_pos = vec4<f32>(model.position + scene.blob.position.xyz, 1.0);
+    
+    out.world_pos = world_pos.xyz;
+    out.clip_position = scene.camera.view_proj * world_pos;
+    out.uv = model.uv;
+    
+    out.normal = model.normal;
+    out.normal_view = model.normal;
+    
     out.tangent_view = model.tangent.xyz;
     let N = normalize(model.normal);
     let T = normalize(model.tangent.xyz);
@@ -309,13 +342,13 @@ fn fs_model(in: ModelOutput) -> @location(0) vec4<f32> {
     let TBN = mat3x3<f32>(T, B, N_geom);
     let N = normalize(TBN * tnorm);
 
-    let V = normalize(camera.camera_pos.xyz - in.world_pos);
+    let V = normalize(scene.camera.camera_pos.xyz - in.world_pos);
     
-    var F0 = vec3<f32>(0.04); 
+    var F0 = vec3<f32>(0.04);
     F0 = mix(F0, albedo, metallic);
 
     // Dynamic Light from Uniform (Point Light with Distance Attenuation)
-    let light_pos = light.position.xyz;
+    let light_pos = scene.light.position.xyz;
     let light_dir = light_pos - in.world_pos;
     let light_distance = length(light_dir);
     let L = normalize(light_dir);
@@ -348,13 +381,13 @@ fn fs_model(in: ModelOutput) -> @location(0) vec4<f32> {
     
     // Light Color & Intensity (from Uniforms only - no audio influence)
     // Apply distance attenuation for point light (omnidirectional)
-    let lightColor = light.color.rgb;
-    let radiance = lightColor * attenuation * intensity_multiplier; 
+    let lightColor = scene.light.color.rgb;
+    let radiance = lightColor * attenuation * intensity_multiplier;
         
     let Lo = (kD * albedo / PI + specular) * radiance * NdotL;
 
     // Ambient / Emission
-    let ambient = light.ambient_color.rgb * albedo * occlusion;
+    let ambient = scene.light.ambient_color.rgb * albedo * occlusion;
     // Add emission for blob visibility (if material is highly emissive/metallic)
     // This makes the blob glow even when not directly lit
     let emission = albedo * metallic * 0.5; // Emissive glow based on material properties 

@@ -63,6 +63,7 @@ flume = "0.11.0"
 
 # Sicherer Umgang mit Puffern
 bytemuck = { version = "1.16.0", features = ["derive"] }
+instant = "0.1.12"
 
 
 [features]
