@@ -1237,9 +1237,10 @@ impl State {
             self.blob_position = self.blob_position + diff * smoothing_factor;
             
             // PERFORMANCE FIX: Update Uniform Buffer instead of recreating Mesh!
+            // Use base_light_color so the blob looks like the light it emits (Sun/Moon color)
             self.scene_uniform.blob = BlobUniform {
                 position: [self.blob_position.x, self.blob_position.y, self.blob_position.z, 0.0],
-                color: [1.0, 1.0, 1.0, 1.0], // White default
+                color: self.base_light_color,
             };
             
             // Update blob light position (always track blob position)
@@ -2050,15 +2051,15 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
         scene_uniform, scene_buffer, scene_bind_group,
         audio_data: Vec::new(), cached_audio_intensity: 0.0,
         camera_target: Vec3::ZERO, camera_radius: 10.0, camera_azimuth: 0.0, camera_polar: 1.57,
-        light_pos_3d: vec3(2.0, 2.0, 2.0), cursor_light_pos_3d: vec3(2.0, 2.0, 2.0), cursor_light_active: true, blob_light_pos_3d: Vec3::ZERO,
+        light_pos_3d: vec3(2.0, 2.0, 2.0), cursor_light_pos_3d: vec3(2.0, 2.0, 2.0), cursor_light_active: false, blob_light_pos_3d: Vec3::ZERO,
         is_dark_theme: true, // Default to dark theme
         base_light_color: base_light,
         base_sky_color: base_sky,
         base_ground_color: base_ground,
-        blob_exists: true, // PERMANENT BLOB: Always exists to act as the "Sun/Moon"
+        blob_exists: false, // Default hidden
         blob_position: vec3(0.0, 5.0, 0.0), // Start above center
         blob_target_position: vec3(0.0, 5.0, 0.0),
-        blob_light_enabled: true,
+        blob_light_enabled: false,
         blob_mesh,
         blob_dragging: false,
         blob_drag_depth: 0.0,

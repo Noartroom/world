@@ -1,5 +1,4 @@
-/* Based on your 'style.css' for modern light/dark theming 
-*/
+/* Based on your 'style.css' for modern light/dark theming */
 :root {
   /* let the browser know this has light and dark mode */
   color-scheme: light dark;
@@ -7,6 +6,11 @@
   /* Theme toggle variables from your file */
   --sun-color: black;
   --moon-color: transparent;
+
+  /* Global light position variables (set by Renderer.astro) */
+  --light-x: 50vw;
+  --light-y: 50vh;
+  --light-intensity: 0;
 }
 
 body {
@@ -78,13 +82,6 @@ a:visited {
 /* --- Dynamic Lighting Engine Styles --- */
 /* Unified lighting system that affects both 3D canvas and HTML elements */
 
-/* Global light position variables (set by Renderer.astro) */
-:root {
-  --light-x: 50vw;
-  --light-y: 50vh;
-  --light-intensity: 0;
-}
-
 /* Body overlay for ambient light effect - Theme-aware */
 body.light-engine-active::before {
   content: '';
@@ -92,7 +89,7 @@ body.light-engine-active::before {
   top: 0; left: 0;
   width: 100%; height: 100%;
   pointer-events: none;
-  z-index: 1; /* Behind UI elements but above canvas */
+  z-index: 1; /* Behind Front UI but above Canvas */
   
   /* Default: Dark theme colors (cool white) */
   background: radial-gradient(
@@ -139,4 +136,75 @@ body.light-engine-active a {
     0 0 calc(5px * var(--light-intensity, 0) * var(--light-proximity)) rgba(240, 245, 255, calc(var(--light-intensity, 0) * var(--light-proximity) * 0.8)),
     0 1px 2px rgba(0, 0, 0, 0.5);
   transition: text-shadow 0.2s ease-out;
+}
+
+/* --- Layer Specific Styles --- */
+
+/* 
+  Layer Z-Index Logic:
+  - Persistent UI (#layer-persistent): 100 (Always Top)
+  
+  Default Mode:
+  - Front Layer (#layer-front): 2 (Above Canvas)
+  - Middle Layer (#layer-middle): 1 (Canvas)
+  - Back Layer (#layer-back): 0 (Behind Canvas)
+  
+  Back Layer Mode (.layer-back-active):
+  - Back Layer (#layer-back): 5 (Moves ABOVE Canvas and Front Layer)
+  - Middle Layer (#layer-middle): 1
+  - Front Layer (#layer-front): 2 (But Hidden via Opacity)
+*/
+
+/* Back Layer Reveal Effect (The Torch) */
+/* When Back Layer is active, we apply the torch effect and move it to front */
+body.layer-back-active #layer-back {
+  opacity: 1 !important; /* Force visible */
+  pointer-events: none !important; /* Pass-through interaction to 3D scene */
+  transform: scale(1) !important;
+  z-index: 5 !important; /* Move above everything else (except persistent UI) */
+  
+  /* The Torch Mask: Fully visible (black) at mouse, 20% visible elsewhere */
+  -webkit-mask-image: radial-gradient(
+    circle 400px at var(--light-x, 50vw) var(--light-y, 50vh),
+    black 0%,
+    rgba(0, 0, 0, 0.2) 70%
+  );
+  mask-image: radial-gradient(
+    circle 400px at var(--light-x, 50vw) var(--light-y, 50vh),
+    black 0%,
+    rgba(0, 0, 0, 0.2) 70%
+  );
+}
+
+/* Allow interaction with actual content in Back Layer */
+body.layer-back-active #layer-back .back-content {
+  pointer-events: auto !important;
+}
+
+/* When Back Layer is active, hide the Front Layer (Audio Player, etc.) */
+body.layer-back-active #layer-front {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* Persistent UI (Buttons) always stays visible and on top (z-index 100 defined in index.astro) */
+
+
+/* Back Layer Content Toggling */
+.description-short {
+  display: none;
+  font-size: 1.5rem;
+  font-weight: bold;
+}
+
+body.layer-back-active #layer-back .description-long {
+  display: none;
+}
+
+body.layer-back-active #layer-back .description-short {
+  display: block;
+}
+
+body.layer-back-active #layer-back .cube-container {
+  display: none !important;
 }

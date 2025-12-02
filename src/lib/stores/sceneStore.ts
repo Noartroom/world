@@ -5,11 +5,11 @@ export { onSet };
 
 // --- Dynamic Light State ---
 // Controls cursor-directed 3D lighting (enabled by default)
-export const isDynamicLightActive = atom(true);
+export const isDynamicLightActive = atom(false);
 
 // --- Light Blob State ---
 // Controls the 3D light blob object
-export const isBlobActive = atom(true);
+export const isBlobActive = atom(false);
 
 // --- Model State ---
 export const activeModel = persistentAtom<'light' | 'dark'>(
@@ -33,3 +33,7 @@ onSet(theme, ({ newValue }) => {
     console.log(`Global Store: Theme set to ${newValue}`);
   }
 });
+
+// --- Layer State ---
+// Controls which HTML layer is focused (front vs back)
+export const activeLayer = atom<'front' | 'back'>('front');

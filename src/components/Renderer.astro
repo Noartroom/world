@@ -3,7 +3,6 @@
 const CANVAS_ID = "webgpu-canvas";  // modernart1-sculpt-1, IMAGE3D-1, dezimiertt-glb-03
 const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
 ---
-
 <div 
   class="renderer-container" 
   id="renderer-container-id"
@@ -35,6 +34,7 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
   import init, { startRenderer } from 'public/pkg/model_renderer.js?v=gpu_fix_6'; /* adjust path for prod/dev */
   import { theme, activeModel, onSet, isDynamicLightActive, isBlobActive } from '../lib/stores/sceneStore';
   import { getAudioData, getStereoData, getComprehensiveAudioAnalysis } from '../lib/stores/audioStore';
+  import { timeStore } from '../lib/stores/timeStore';
 
     // DOM Elemente
   const container = document.getElementById('renderer-container-id');
@@ -50,10 +50,8 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
   let lightUnsub: (() => void) | null = null;
   let blobUnsub: (() => void) | null = null;
   let modelUnsub: (() => void) | null = null;
+  let timeUnsub: (() => void) | null = null;
   let isLoadingModel = false; // Prevent concurrent model loads
-
-  // Time-of-Day State
-  let timeInterval: NodeJS.Timeout | null = null;
 
   // Performance Monitoring (SOTA Guardrails)
   let lastFrameTime = performance.now();
@@ -286,37 +284,32 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
   }
 
   // --- Time-of-Day System ---
-  function updateTimeOfDay() {
+  function updateTimeOfDay(currentHour: number) {
       if (!state || !state.setEnvironmentLight) return;
       
-      const now = new Date();
-      // Calculate normalized time (0.0 - 1.0) based on hours and minutes
+      // Calculate normalized time (0.0 - 1.0) based on hours
       // 0.0 = midnight, 0.5 = noon, 1.0 = midnight next day
-      const hours = now.getHours();
-      const minutes = now.getMinutes();
-      const time = (hours * 60 + minutes) / 1440;
+      const time = currentHour / 24.0;
       
       // Interpolate colors based on time
       // Sunrise (6am - 0.25), Noon (12pm - 0.5), Sunset (6pm - 0.75), Night
       
-      let sky = { r: 0, g: 0, b: 0 };
-      let ground = { r: 0, g: 0, b: 0 };
       let light = { r: 0, g: 0, b: 0 };
       
       // Time-of-Day dependent top layer
-      if (time < 0.25) { // Night -> Sunrise
+      if (time < 0.25) { // Night -> Sunrise (00:00 - 06:00)
           const t = time / 0.25;
           // Light: White Moonlight -> Morning Orange
           light = lerpColor({r:0.9, g:0.95, b:1.0}, {r:1.0, g:0.6, b:0.3}, t);
-      } else if (time < 0.5) { // Sunrise -> Noon
+      } else if (time < 0.5) { // Sunrise -> Noon (06:00 - 12:00)
           const t = (time - 0.25) / 0.25;
           // Light: Orange -> Bright Yellow
           light = lerpColor({r:1.0, g:0.6, b:0.3}, {r:1.0, g:0.95, b:0.8}, t);
-      } else if (time < 0.75) { // Noon -> Sunset
+      } else if (time < 0.75) { // Noon -> Sunset (12:00 - 18:00)
           const t = (time - 0.5) / 0.25;
           // Light: Yellow -> Sunset Orange
           light = lerpColor({r:1.0, g:0.95, b:0.8}, {r:1.0, g:0.5, b:0.2}, t);
-      } else { // Sunset -> Night
+      } else { // Sunset -> Night (18:00 - 24:00)
           const t = (time - 0.75) / 0.25;
           // Light: Orange -> White Moonlight
           light = lerpColor({r:1.0, g:0.5, b:0.2}, {r:0.9, g:0.95, b:1.0}, t);
@@ -327,31 +320,6 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
           0, 0, 0, // No Ground
           light.r, light.g, light.b
       );
-      
-      // Update CSS gradient to match
-      if (container) {
-          container.style.background = 'transparent'; // No background at all
-      }
-
-      // Update Time Display (Day XX:XX)
-      const timeDisplay = document.getElementById('time-display');
-      if (timeDisplay) {
-          const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-          const dayName = days[now.getDay()];
-          const hoursStr = hours.toString().padStart(2, '0');
-          const minutesStr = minutes.toString().padStart(2, '0');
-          timeDisplay.textContent = `${dayName} ${hoursStr}:${minutesStr}`;
-          
-          // Dynamic text color based on time (light text at night, dark text during day if sky is bright)
-          // Simple heuristic: if sky is bright (r > 0.5), use dark text
-          if (sky.r > 0.5) {
-              timeDisplay.style.color = 'rgba(0, 0, 0, 0.7)';
-              timeDisplay.style.textShadow = '0 0 10px rgba(255, 255, 255, 0.5)';
-          } else {
-              timeDisplay.style.color = 'rgba(255, 255, 255, 0.9)';
-              timeDisplay.style.textShadow = '0 0 10px rgba(0, 0, 0, 0.5)';
-          }
-      }
   }
   
   function lerpColor(c1: any, c2: any, t: number) {
@@ -380,8 +348,9 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
       }
       
       // 1.1 Time-of-Day Sync
-      updateTimeOfDay(); // Initial update
-      timeInterval = setInterval(updateTimeOfDay, 60000); // Update every minute
+      timeUnsub = timeStore.subscribe((value: number) => {
+         updateTimeOfDay(value);
+      });
 
       // 1.5 Dynamic Light Sync
       // Cursor-directed 3D lighting is enabled by default (controlled by isDynamicLightActive)
@@ -690,7 +659,7 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
     if (themeUnsub) themeUnsub();
     if (lightUnsub) lightUnsub();
     if (modelUnsub) modelUnsub();
-    if (timeInterval) clearInterval(timeInterval);
+    if (timeUnsub) timeUnsub();
     
     if (state && state.free) state.free();
     state = null;
@@ -704,9 +673,11 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
 
 <style>
 .renderer-container {
-  position: fixed;
+  position: absolute;
   inset: 0;
-  z-index: -1;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
   background: transparent;
   cursor: grab;
   overflow: hidden;

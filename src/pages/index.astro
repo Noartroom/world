@@ -5,22 +5,66 @@ import Renderer from '@/components/Renderer.astro';
 ---
 <Layout title="Astro Prototype">
   <main>
-    <h1 id="page-title" class="floating-title"></h1> <!-- test -->
-    <div class="global-controls">
-      <button id="themeToggle" class="global-toggle">Toggle Theme</button>
-      <button id="modelToggle" class="global-toggle">Switch Model</button>
-      <button id="light-engine-toggle" class="global-toggle">Toggle Dynamic Light</button>
-      <button id="blob-toggle" class="global-toggle">Toggle Light Blob</button>
+    <!-- Persistent UI: Always on top (Buttons) -->
+    <div id="layer-persistent">
+      <div class="global-controls">
+        <div class="layer-nav">
+          <button id="nav-front" class="global-toggle active" aria-pressed="true">Front Focus</button>
+          <button id="nav-back" class="global-toggle" aria-pressed="false">Back Focus</button>
+        </div>
+        
+        <div class="divider"></div>
+
+        <button id="themeToggle" class="global-toggle">Toggle Theme</button>
+        <button id="modelToggle" class="global-toggle">Switch Model</button>
+        <button id="light-engine-toggle" class="global-toggle">Toggle Dynamic Light</button>
+        <button id="blob-toggle" class="global-toggle">Toggle Light Blob</button>
+        
+        <div id="time-display" class="global-toggle time-control" tabindex="0" role="button" aria-label="Change time of day">
+          <span class="time-label">TIME</span>
+          <span class="time-value">12:00</span>
+        </div>
+      </div>
     </div>
-    <Renderer />
-    
-    <!-- <IamfPlayer /> -->
-    <IamfPlayer />
+
+    <!-- Back Layer: Content behind the 3D scene (Moves to front when active) -->
+    <div id="layer-back" class="layer">
+      <div class="back-content">
+        <h2>The Back Layer</h2>
+        <p class="description-long">This content lives behind the 3D world. Move your mouse to reveal it with the torch light.</p>
+        <p class="description-short">Focused View</p>
+        
+        <div class="cube-container">
+          <div class="cube">
+            <div class="face front">Front</div>
+            <div class="face back">Back</div>
+            <div class="face right">Right</div>
+            <div class="face left">Left</div>
+            <div class="face top">Top</div>
+            <div class="face bottom">Bottom</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Middle Layer: The 3D Scene -->
+    <div id="layer-middle" class="layer">
+      <Renderer />
+    </div>
+
+    <!-- Front Layer: Non-persistent UI (Audio Player, Titles) -->
+    <div id="layer-front" class="layer">
+      <h1 id="page-title" class="floating-title"></h1> <!-- test -->
+      
+      <IamfPlayer />
+    </div>
   </main>
 </Layout>
+
 <script>
   // This script controls the global buttons
-  import { theme, activeModel, isDynamicLightActive, isBlobActive } from '../lib/stores/sceneStore';
+  import { theme, activeModel, isDynamicLightActive, isBlobActive, activeLayer } from '../lib/stores/sceneStore';
+  import { timeStore, changeTime } from '../lib/stores/timeStore';
 
   const themeButton = document.getElementById('themeToggle');
   themeButton?.addEventListener('click', () => {
@@ -50,6 +94,70 @@ import Renderer from '@/components/Renderer.astro';
   blobButton?.addEventListener('click', () => {
     isBlobActive.set(!isBlobActive.get());
   });
+
+  // --- Layer Navigation Logic ---
+  const navFront = document.getElementById('nav-front');
+  const navBack = document.getElementById('nav-back');
+
+  navFront?.addEventListener('click', () => activeLayer.set('front'));
+  navBack?.addEventListener('click', () => activeLayer.set('back'));
+
+  // Subscribe to layer changes
+  activeLayer.subscribe(layer => {
+    const isBack = layer === 'back';
+    
+    // Update body class for CSS styling
+    document.body.classList.toggle('layer-back-active', isBack);
+    document.body.classList.toggle('layer-front-active', !isBack);
+
+    // Update button states
+    if (navFront && navBack) {
+      navFront.classList.toggle('active', !isBack);
+      navFront.setAttribute('aria-pressed', (!isBack).toString());
+      
+      navBack.classList.toggle('active', isBack);
+      navBack.setAttribute('aria-pressed', isBack.toString());
+    }
+  });
+
+  // Time Control Logic
+  const timeDisplay = document.getElementById('time-display');
+  const timeValue = timeDisplay?.querySelector('.time-value');
+
+  function formatTime(hours: number): string {
+    const h = Math.floor(hours);
+    const m = Math.floor((hours - h) * 60);
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+  }
+
+  // Update display when store changes
+  timeStore.subscribe(value => {
+    if (timeValue) {
+      timeValue.textContent = formatTime(value);
+    }
+  });
+
+  if (timeDisplay) {
+    // Mouse wheel interaction
+    timeDisplay.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? 0.5 : -0.5; // Change by 30 mins
+      changeTime(delta);
+    }, { passive: false });
+
+    // Click to focus/enable keyboard support is handled by tabindex
+
+    // Keyboard interaction
+    timeDisplay.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        changeTime(0.5);
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') {
+        e.preventDefault();
+        changeTime(-0.5);
+      }
+    });
+  }
 </script>
 
 <style>
@@ -57,29 +165,93 @@ import Renderer from '@/components/Renderer.astro';
     width: 100vw;
     height: 100vh;
     overflow: hidden; /* Make it full-screen */
-    /* Clicks go through */
-    pointer-events: none; 
     background: transparent;
+    position: relative; /* Context for absolute layers */
   }
+
+  /* Layer Base Styles */
+  .layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    transition: all 0.5s ease-out;
+  }
+
+  /* --- Persistent Layer (UI) --- */
+  #layer-persistent {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 0; /* Don't block clicks on full screen */
+    z-index: 100; /* ALWAYS ON TOP */
+    pointer-events: none;
+  }
+
+  /* --- Back Layer --- */
+  #layer-back {
+    z-index: 0; /* Default: Behind everything */
+    opacity: 0.3; /* Default: Dim */
+    transform: scale(0.95);
+    pointer-events: none; 
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+
+  /* --- Middle Layer (3D) --- */
+  #layer-middle {
+    z-index: 1; /* Default: Middle */
+    pointer-events: none; /* Let clicks pass through */
+  }
+
+  /* --- Front Layer --- */
+  #layer-front {
+    z-index: 2; /* Default: Front */
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+  }
+
+  /* Interactive elements need pointer events */
+  #layer-persistent .global-controls,
+  #layer-front .floating-title,
+  #layer-front :global(.iamf-player) {
+    pointer-events: auto;
+  }
+
+  /* --- Navigation Controls --- */
   .global-controls {
     position: fixed;
     top: 1rem;
     right: 1rem;
-    z-index: 1000;
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
-    pointer-events: auto; /* Re-enable clicking */
-    /* Always apply base styling to prevent layout shifts */
+    pointer-events: auto;
     border-radius: 8px;
     padding: 0.5rem;
     background: rgba(0, 0, 0, 0.3);
     backdrop-filter: blur(20px);
     /* Box shadow always present, intensity controlled by CSS var */
     --panel-glow: 0;
-    /* Theme-based glow: cool white for dark theme */
     box-shadow: 0 0 calc(30px * var(--panel-glow)) rgba(240, 245, 255, var(--panel-glow));
+    transition: opacity 0.3s ease, transform 0.3s ease;
   }
+
+  .layer-nav {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .divider {
+    height: 1px;
+    background: rgba(255, 255, 255, 0.1);
+    margin: 0.2rem 0;
+  }
+
   .global-toggle {
     padding: 0.5em 1em;
     background: rgba(68, 68, 68, 0.8);
@@ -87,41 +259,62 @@ import Renderer from '@/components/Renderer.astro';
     border: 1px solid rgba(255, 255, 255, 0.1);
     backdrop-filter: blur(10px);
     transition: all 0.2s ease-out;
+    cursor: pointer;
+    font-size: 0.9rem;
     
-    /* Dynamic lighting effects - simplified calculations */
+    /* Dynamic lighting effects */
     --light-dx: calc(var(--light-x, 50vw) - 50vw);
     --light-dy: calc(var(--light-y, 50vh) - 50vh);
-    /* Simplified proximity: use intensity directly, proximity effect handled by intensity */
     --light-proximity: var(--light-intensity, 0);
-    
-    /* Shadow offset - opposite direction from light */
     --shadow-offset-x: calc(var(--light-dx) * -0.05);
     --shadow-offset-y: calc(var(--light-dy) * -0.05);
     --shadow-blur: calc(5px + (var(--light-intensity, 0) * 15px) + (var(--light-proximity) * 10px));
     --glow-intensity: calc(var(--light-intensity, 0) * var(--light-proximity) * 0.5);
     
-    /* Theme-based glow: cool white for dark theme */
     box-shadow: 
       var(--shadow-offset-x) var(--shadow-offset-y) var(--shadow-blur) rgba(0, 0, 0, 0.4),
       0 0 calc(20px * var(--glow-intensity)) rgba(240, 245, 255, var(--glow-intensity)),
       inset 0 1px 0 rgba(255, 255, 255, 0.1);
-    
-    transform: translateZ(0); /* Enable 3D transforms */
+      
+    transform: translateZ(0);
     will-change: box-shadow, transform;
+  }
+
+  .global-toggle.active {
+    background: rgba(88, 166, 255, 0.3);
+    border-color: rgba(88, 166, 255, 0.5);
+    box-shadow: 0 0 15px rgba(88, 166, 255, 0.3);
   }
   
   .global-toggle:hover {
-    /* Theme-based hover: cool white for dark theme */
     background: rgba(240, 245, 255, 0.15);
     transform: translateZ(5px) scale(1.05);
-    --glow-intensity: calc((var(--light-intensity, 0) * var(--light-proximity) * 0.8) + 0.3);
+  }
+
+  .time-control {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    cursor: ns-resize;
+    user-select: none;
+  }
+
+  .time-label {
+    font-size: 0.8em;
+    opacity: 0.7;
+    font-weight: bold;
+  }
+
+  .time-value {
+    font-family: monospace;
+    font-weight: bold;
   }
   
   .floating-title {
     position: absolute;
     top: 15%;
     left: 50%;
-    /* Simple, consistent transform - never changes */
     transform: translate(-50%, -50%);
     font-size: 6rem;
     font-weight: 900;
@@ -131,33 +324,79 @@ import Renderer from '@/components/Renderer.astro';
     text-transform: uppercase;
     letter-spacing: 0.5rem;
     
-    /* Enhanced Dynamic Shadow based on light position */
     --light-dx: calc(var(--light-x, 50vw) - 50vw);
     --light-dy: calc(var(--light-y, 50vh) - 50vh);
-    /* Simplified proximity: use intensity directly for visual effect */
     --light-proximity: var(--light-intensity, 0);
-    
-    /* Shadow offset - opposite direction from light */
     --shadow-x: calc(var(--light-dx) * -0.15);
     --shadow-y: calc(var(--light-dy) * -0.15);
     --shadow-blur: calc(15px + (var(--light-intensity, 0) * 25px) + (var(--light-proximity) * 15px));
     --shadow-opacity: calc(0.3 + (var(--light-intensity, 0) * 0.4) + (var(--light-proximity) * 0.3));
-    
-    /* Glow effect when light is close - Theme-based (no audio-directed colors) */
     --glow-intensity: calc(var(--light-intensity, 0) * var(--light-proximity) * 0.6);
-    /* Theme-based glow color: cool white for dark theme, warm white for light theme */
     --glow-color-dark: rgba(240, 245, 255, var(--glow-intensity));
-    --glow-color-light: rgba(255, 250, 240, var(--glow-intensity));
     
-    /* Use text-shadow instead of filter drop-shadow to avoid layout shifts */
-    /* Base shadow always present */
     text-shadow: 
       0 0 20px rgba(0, 0, 0, 0.5),
       var(--shadow-x) var(--shadow-y) var(--shadow-blur) rgba(0, 0, 0, var(--shadow-opacity)),
       0 0 calc(30px * var(--glow-intensity)) var(--glow-color-dark);
     
-    /* Smooth transitions for visual effects only */
     transition: text-shadow 0.1s ease-out;
     will-change: text-shadow;
   }
+
+  /* --- Back Layer Content Styles --- */
+  .back-content {
+    color: rgba(255, 255, 255, 0.8);
+    text-align: center;
+    max-width: 600px;
+    padding: 2rem;
+    background: rgba(0, 0, 0, 0.4);
+    border-radius: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+  }
+
+  .cube-container {
+    width: 300px;
+    height: 300px;
+    perspective: 800px;
+    margin: 3rem auto;
+  }
+
+  .cube {
+    width: 100%;
+    height: 100%;
+    position: relative;
+    transform-style: preserve-3d;
+    transform: rotateX(-20deg) rotateY(-30deg);
+    animation: rotate 30s infinite linear;
+  }
+
+  @keyframes rotate {
+    from { transform: rotateX(-20deg) rotateY(0deg); }
+    to { transform: rotateX(-20deg) rotateY(360deg); }
+  }
+
+  .face {
+    position: absolute;
+    width: 300px;
+    height: 300px;
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-family: monospace;
+    font-size: 0.8rem;
+    letter-spacing: 2px;
+    color: rgba(255, 255, 255, 0.4);
+    box-shadow: 0 0 15px rgba(255, 255, 255, 0.05), inset 0 0 30px rgba(255, 255, 255, 0.05);
+    backface-visibility: visible;
+  }
+
+  .front  { transform: rotateY(0deg) translateZ(150px); }
+  .back   { transform: rotateY(180deg) translateZ(150px); }
+  .right  { transform: rotateY(90deg) translateZ(150px); }
+  .left   { transform: rotateY(-90deg) translateZ(150px); }
+  .top    { transform: rotateX(90deg) translateZ(150px); }
+  .bottom { transform: rotateX(-90deg) translateZ(150px); }
 </style>

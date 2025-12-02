@@ -86,3 +86,27 @@ Phase 2: Integration
 Phase 3: Polish
 - Tune the "Hemispheric" light gradient to perfectly match the CSS background.
 - Add "Soft Shadows" (simulated via darkened ground ambient color).
+
+
+Improving the day time immsersiveness: Add the ability for user to change time of day by typing it in or wheel scroll, after having clicked on the time. This should result in a visual effect that dynamically adjusts the light blob emitted light from different shades of sun to even white moonlight, corresponding to the scrolled time of day. enable fast scroll i.e. several hours can be scrolled with a single scroll interaction.
+
+Improving Layer structure and navigation immersiveness: 
+The “Layers“
+
+The Layers are the spaces that can be moved between via navigation buttons. For now we have front and back layer, so we need a front and back button that allows the user to focus on either Layer. The 3D scene is always visible, just the HTML elements in the Foreground change.
+	•	Back Layer (HTML): The background is dim, but the mouse "reveals" the content because the UI elements subtly glow at their border when mouse passes near them. Besides text, i want a basic 3d „cube“ / „box“ layout in CSS that gives the impression of depth.
+	•	Middle Layer (3D): this is the performance and rendering quality optimized 3d scene that is always visible and, woven into the html + css UI, by being „in the background“ of the Front Layer but possible to break through to the Back layer as well. It also needs one UI element that is permanently in the „Front Layer“: The navigation buttons.
+	•	Front Layer (HTML): UI elements have a subtle "glow" border when the mouse passes near them. They disappear when the user moves from front Layer to Back Layer.
+
+The „Mouse emitting light" / „Dynamic Light“ (Cross-Layer Lighting)
+The mouse cursor acts as a light source that affects both layers simultaneously. We can create a css class „glow-ui“.
+	•	Back Layer (HTML): Use a CSS mask-image or radial-gradient on the text/background that follows the mouse. The background is dim, but the mouse "reveals" the content because the UI elements subtly glow at their border when mouse passes near them
+	•	Middle Layer (3D): The 3D cursor light (which you already implemented!) illuminates the clay model - we dont change anything
+	•	Front Layer (HTML): UI elements have a subtle "glow" border when the mouse passes near them.
+	•	The Effect: It feels like the user is holding a torch in a dark room, illuminating 3D objects and 2D text in the same physical space.
+
+The „Fake" Glass Refraction 
+Real-time refraction of HTML elements behind a canvas is computationally extremely heavy (requires copying the DOM to a texture).
+	•	The Cheat: Create a CSS Gradient background. Pass the exact same gradient colors and direction to your WebGPU shader.
+	•	The Shader: In fs_model, render the object as "glass" (high transmission). Instead of refracting a texture, you refract the procedural gradient.
+	•	The Result: It looks like the 3D object is refracting the background, even though it's just math.
