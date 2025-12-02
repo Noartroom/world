@@ -11,58 +11,6 @@ use wasm_bindgen_futures::JsFuture;
 use js_sys::{Uint8Array, Array};
 use std::panic;
 use instant;
-use rapier3d::prelude::*;
-
-// --- PHYSICS STATE ---
-struct PhysicsState {
-    rigid_body_set: RigidBodySet,
-    collider_set: ColliderSet,
-    integration_parameters: IntegrationParameters,
-    physics_pipeline: PhysicsPipeline,
-    island_manager: IslandManager,
-    broad_phase: BroadPhase,
-    narrow_phase: NarrowPhase,
-    impulse_joint_set: ImpulseJointSet,
-    multibody_joint_set: MultibodyJointSet,
-    ccd_solver: CCDSolver,
-    gravity: Vector<Real>,
-}
-
-impl PhysicsState {
-    fn new() -> Self {
-        Self {
-            rigid_body_set: RigidBodySet::new(),
-            collider_set: ColliderSet::new(),
-            integration_parameters: IntegrationParameters::default(),
-            physics_pipeline: PhysicsPipeline::new(),
-            island_manager: IslandManager::new(),
-            broad_phase: BroadPhase::new(),
-            narrow_phase: NarrowPhase::new(),
-            impulse_joint_set: ImpulseJointSet::new(),
-            multibody_joint_set: MultibodyJointSet::new(),
-            ccd_solver: CCDSolver::new(),
-            gravity: vector![0.0, -9.81, 0.0],
-        }
-    }
-
-    fn step(&mut self) {
-        self.physics_pipeline.step(
-            &self.gravity,
-            &self.integration_parameters,
-            &mut self.island_manager,
-            &mut self.broad_phase,
-            &mut self.narrow_phase,
-            &mut self.rigid_body_set,
-            &mut self.collider_set,
-            &mut self.impulse_joint_set,
-            &mut self.multibody_joint_set,
-            &mut self.ccd_solver,
-            None,
-            &(),
-            &(),
-        );
-    }
-}
 
 // --- CONSTANTS ---
 // OPTIMIZATION: 4x MSAA for SOTA quality
@@ -342,7 +290,6 @@ struct Mesh {
     center: Vec3, // For sorting transparent meshes
     aabb_min: Vec3, // Axis-aligned bounding box minimum
     aabb_max: Vec3, // Axis-aligned bounding box maximum
-    collider_handle: Option<ColliderHandle>,
 }
 
 struct Model {
@@ -428,7 +375,6 @@ fn create_sphere_mesh(device: &wgpu::Device, queue: &wgpu::Queue, radius: f32, s
         diffuse_index: None, normal_index: None, mr_index: None,
         diffuse_view: Rc::new(emissive_texture.view), normal_view: Rc::new(white_normal.view), mr_view: Rc::new(smooth_texture.view),
         sampler, center: Vec3::ZERO, aabb_min: Vec3::splat(-radius), aabb_max: Vec3::splat(radius),
-        collider_handle: None,
     }
 }
 
@@ -536,10 +482,6 @@ pub struct State {
     blob_dragging: bool,
     blob_drag_depth: f32,
     
-    // Physics System
-    physics: PhysicsState,
-    blob_body_handle: Option<RigidBodyHandle>,
-
     // Model System
     model: Option<Model>,
     material_layout: wgpu::BindGroupLayout,
@@ -791,15 +733,15 @@ impl State {
         self.is_dark_theme = is_dark;
         
         if is_dark {
-            // Dark theme defaults
-            self.base_light_color = [0.95, 0.97, 1.0, 1.0]; // Cool white
-            self.base_sky_color = [0.05, 0.05, 0.1, 1.0]; // Dark blue-ish sky
-            self.base_ground_color = [0.01, 0.01, 0.02, 1.0]; // Very dark ground
+            // Dark theme defaults - Deep Space / Cyber
+            self.base_light_color = [0.96, 0.98, 1.0, 1.0]; // Crisp cool white
+            self.base_sky_color = [0.08, 0.1, 0.15, 1.0]; // Deep midnight blue
+            self.base_ground_color = [0.02, 0.02, 0.03, 1.0]; // Almost black void
         } else {
-            // Light theme defaults
-            self.base_light_color = [1.0, 0.98, 0.95, 1.0]; // Warm white
-            self.base_sky_color = [0.9, 0.9, 0.95, 1.0]; // Bright sky
-            self.base_ground_color = [0.2, 0.2, 0.2, 1.0]; // Grey ground
+            // Light theme defaults - Dreamy / Ethereal
+            self.base_light_color = [1.0, 0.96, 0.92, 1.0]; // Soft warm sun
+            self.base_sky_color = [0.92, 0.94, 0.98, 1.0]; // Pale blue sky
+            self.base_ground_color = [0.25, 0.22, 0.20, 1.0]; // Warm earthy grey
         }
 
         web_sys::console::log_1(&format!("Theme updated to: {}", if is_dark { "Dark" } else { "Light" }).into());
@@ -894,10 +836,13 @@ impl State {
                 // Default Textures
                 let white_tex_srgb = Texture::single_pixel(&self.device, &self.queue, [255, 255, 255, 255], true);
                 let white_tex_linear = Texture::single_pixel(&self.device, &self.queue, [255, 255, 255, 255], false);
+                // Clay PBR Default: Occlusion=1.0 (R), Roughness=1.0 (G), Metallic=0.0 (B)
+                let clay_mr_tex = Texture::single_pixel(&self.device, &self.queue, [255, 255, 0, 255], false);
                 let normal_tex = Texture::single_pixel(&self.device, &self.queue, [128, 128, 255, 255], false);
                 
                 let white_view_srgb = Rc::new(white_tex_srgb.view);
                 let white_view_linear = Rc::new(white_tex_linear.view);
+                let clay_mr_view = Rc::new(clay_mr_tex.view);
                 let normal_view = Rc::new(normal_tex.view);
                 
                 // High-quality sampler with anisotropic filtering
@@ -972,17 +917,6 @@ impl State {
 
                                     let center = (min + max) * 0.5;
 
-                                    // Physics Collider
-                                    let collider_verts: Vec<Point<Real>> = vertices.iter()
-                                        .map(|v| Point::new(v.position[0], v.position[1], v.position[2]))
-                                        .collect();
-                                    
-                                    let collider_handle = if let Some(collider) = ColliderBuilder::convex_hull(&collider_verts) {
-                                        Some(self.physics.collider_set.insert(collider))
-                                    } else {
-                                        None
-                                    };
-
                                     let v_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                                         label: Some("Mesh Vertex Buffer"),
                                         contents: bytemuck::cast_slice(&vertices),
@@ -1053,7 +987,7 @@ impl State {
                                             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
                                             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&normal_view) },
                                             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&sampler) },
-                                            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&white_view_linear) }, // Reuse white for default MR
+                                            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&clay_mr_view) }, // Use Clay PBR default
                                             wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&sampler) },
                                         ],
                                         label: Some("Material Bind Group"),
@@ -1069,12 +1003,11 @@ impl State {
                                         mr_index: mr_idx,
                                         diffuse_view: white_view_srgb.clone(),
                                         normal_view: normal_view.clone(),
-                                        mr_view: white_view_linear.clone(),
+                                        mr_view: clay_mr_view.clone(),
                                         sampler: sampler.clone(),
                                         center,
                                         aabb_min: min,
                                         aabb_max: max,
-                                        collider_handle,
                                     };
 
                                     match mat.alpha_mode() {
@@ -1872,9 +1805,9 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
 
     // 0. Scene Uniform (Consolidated)
     // Initial colors for Dark Theme (default)
-    let base_light = [0.95, 0.97, 1.0, 1.0];
-    let base_sky = [0.05, 0.05, 0.1, 1.0];
-    let base_ground = [0.01, 0.01, 0.02, 1.0];
+    let base_light = [0.96, 0.98, 1.0, 1.0];
+    let base_sky = [0.08, 0.1, 0.15, 1.0];
+    let base_ground = [0.02, 0.02, 0.03, 1.0];
 
     let scene_uniform = SceneUniform {
         camera: CameraUniform { view_proj: Mat4::IDENTITY.to_cols_array_2d(), inv_view_proj: Mat4::IDENTITY.to_cols_array_2d(), camera_pos: [0.0; 4] },
@@ -2077,8 +2010,6 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
         blob_mesh,
         blob_dragging: false,
         blob_drag_depth: 0.0,
-        physics: PhysicsState::new(),
-        blob_body_handle: None,
         model: None, model_center: Vec3::ZERO, model_extent: 2.0, material_layout, texture_cache: HashMap::new(), tx, rx
     })
 }

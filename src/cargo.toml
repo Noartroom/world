@@ -54,9 +54,6 @@ glam = { version = "0.28.0", features = ["bytemuck"] }
 # GLTF/GLB-Parsing
 gltf = { version = "1.4.1", features = ["default", "import", "KHR_lights_punctual"] }
 anyhow = "1.0.86"
-# Physics
-rapier3d = { version = "0.18.0", features = ["wasm-bindgen"] }
-
 # Lade-Utilities
 reqwest = { version = "0.12.5", features = ["json"] }
 

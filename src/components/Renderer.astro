@@ -15,18 +15,23 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
     id="loader" 
     class="loader"
   >INITIALIZING GPU...</div>
-  <div 
-    id="debug-overlay" 
+  <div
+    id="debug-overlay"
     style="position: absolute; top: 10px; left: 10px; color: #0f0; background: rgba(0,0,0,0.7); padding: 10px; pointer-events: none; font-family: monospace; z-index: 9999;">
       Waiting for audio data...
   </div>
+
+  <div
+    id="time-display"
+    class="time-display magnetic-ui"
+  ></div>
   
   <canvas id={CANVAS_ID} tabindex="0" aria-label="3D Canvas"></canvas>
   <div class="css-light-overlay"></div>
 </div>
 
 <script>
-  import init, { startRenderer } from '/pkg/model_renderer.js?v=gpu_fix_6';
+  import init, { startRenderer } from 'public/pkg/model_renderer.js?v=gpu_fix_6';
   import { theme, activeModel, onSet, isDynamicLightActive, isBlobActive } from '../lib/stores/sceneStore';
   import { getAudioData, getStereoData, getComprehensiveAudioAnalysis } from '../lib/stores/audioStore';
 
@@ -331,10 +336,30 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
       
       // Update CSS gradient to match
       if (container) {
-          const cssGradient = `linear-gradient(to bottom, 
-              rgb(${Math.floor(sky.r*255)}, ${Math.floor(sky.g*255)}, ${Math.floor(sky.b*255)}) 0%, 
+          const cssGradient = `linear-gradient(to bottom,
+              rgb(${Math.floor(sky.r*255)}, ${Math.floor(sky.g*255)}, ${Math.floor(sky.b*255)}) 0%,
               rgb(${Math.floor(ground.r*255)}, ${Math.floor(ground.g*255)}, ${Math.floor(ground.b*255)}) 100%)`;
           container.style.background = cssGradient;
+      }
+
+      // Update Time Display (Day XX:XX)
+      const timeDisplay = document.getElementById('time-display');
+      if (timeDisplay) {
+          const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+          const dayName = days[now.getDay()];
+          const hoursStr = hours.toString().padStart(2, '0');
+          const minutesStr = minutes.toString().padStart(2, '0');
+          timeDisplay.textContent = `${dayName} ${hoursStr}:${minutesStr}`;
+          
+          // Dynamic text color based on time (light text at night, dark text during day if sky is bright)
+          // Simple heuristic: if sky is bright (r > 0.5), use dark text
+          if (sky.r > 0.5) {
+              timeDisplay.style.color = 'rgba(0, 0, 0, 0.7)';
+              timeDisplay.style.textShadow = '0 0 10px rgba(255, 255, 255, 0.5)';
+          } else {
+              timeDisplay.style.color = 'rgba(255, 255, 255, 0.9)';
+              timeDisplay.style.textShadow = '0 0 10px rgba(0, 0, 0, 0.5)';
+          }
       }
   }
   
@@ -735,5 +760,19 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
   );
   mix-blend-mode: screen;
   z-index: 2; /* Ensure it's above the canvas */
+}
+
+.time-display {
+  position: absolute;
+  top: 2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: 'Courier New', monospace; /* Tech/Digital feel */
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: 0.1rem;
+  z-index: 10; /* Above canvas */
+  pointer-events: none;
+  transition: color 1s ease, text-shadow 1s ease;
 }
 </style>

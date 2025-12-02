@@ -43,7 +43,9 @@
         "details": "- Fix WGPU v24 `limits` and `cache` structs.\n- Implement `BlobUniform` to stop mesh recreation lag.\n- Finalize `load_model_from_bytes` using the low-level parser fix.",
         "testStrategy": "Verify consistent 60fps during blob movement and model loading.",
         "status": "done",
-        "dependencies": ["2"],
+        "dependencies": [
+          "2"
+        ],
         "priority": "high",
         "subtasks": []
       },
@@ -51,10 +53,12 @@
         "id": 5,
         "title": "Phase 2: Integration - Time & Physics Sync",
         "description": "Connect the physical world (Time, Cursor) to the digital world.",
-        "details": "- Connect JS Date() to Rust `set_environment_light`.\n- Connect Rust `get_blob_screen_position` to HTML UI repulsion logic.\n- Update Renderer.astro to drive Time-of-Day lighting from JS.\n- Update Renderer.astro to use Blob Screen Position for UI effects.",
-        "testStrategy": "Verify lighting changes with time/simulated time. Verify UI elements move away from the blob.",
-        "status": "pending",
-        "dependencies": ["4"],
+        "details": "- Connect JS Date() to Rust `set_environment_light`.\n- Connect Rust `get_blob_screen_position` to HTML UI repulsion logic.\n- Update Renderer.astro to drive Time-of-Day lighting from JS.\n- Update Renderer.astro to use Blob Screen Position for UI effects.\n- Implement visible 'Day XX:XX' time display in HTML.",
+        "testStrategy": "Verify lighting changes with time/simulated time. Verify UI elements move away from the blob. Verify time display updates correctly.",
+        "status": "done",
+        "dependencies": [
+          "4"
+        ],
         "priority": "high",
         "subtasks": []
       },
@@ -64,8 +68,10 @@
         "description": "Final visual tuning for the 'Dreamworld' aesthetic.",
         "details": "- Tune the 'Hemispheric' light gradient to perfectly match the CSS background.\n- Add 'Soft Shadows' (simulated via darkened ground ambient color).",
         "testStrategy": "Visual inspection of blending between 3D and DOM layers.",
-        "status": "pending",
-        "dependencies": ["5"],
+        "status": "done",
+        "dependencies": [
+          "5"
+        ],
         "priority": "medium",
         "subtasks": []
       }
@@ -73,7 +79,7 @@
     "metadata": {
       "created": "2025-11-21T19:43:27.080Z",
       "description": "Updated tasks based on PRD Roadmap",
-      "updated": "2025-12-01T23:20:00.000Z"
+      "updated": "2025-12-02T00:08:26.993Z"
     }
   }
 }

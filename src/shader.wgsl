@@ -387,11 +387,19 @@ fn fs_model(in: ModelOutput) -> @location(0) vec4<f32> {
         
     let Lo = (kD * albedo / PI + specular) * radiance * NdotL;
 
-    // Ambient (Hemispheric)
+    // Ambient (Hemispheric) with Soft Ground Shadows
     // Blend between ground and sky color based on normal Y
     let up = vec3<f32>(0.0, 1.0, 0.0);
-    let w = 0.5 * (dot(N, up) + 1.0);
-    let ambient_light = mix(scene.light.ground_color.rgb, scene.light.sky_color.rgb, w);
+    let w_linear = 0.5 * (dot(N, up) + 1.0);
+    
+    // "Dreamworld" Gradient Tuning:
+    // Use a slightly wider smoothstep to mimic the CSS gradient's softness,
+    // but keep the bottom darker for grounding.
+    // 0.2 to 0.8 gives a smooth transition across the equator.
+    let w = smoothstep(0.2, 0.8, w_linear);
+    
+    // Mix with a bias: darken the ground color significantly to simulate soft occlusion shadows at the base
+    let ambient_light = mix(scene.light.ground_color.rgb * 0.6, scene.light.sky_color.rgb, w);
     
     let ambient = ambient_light * albedo * occlusion;
     
