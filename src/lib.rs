@@ -11,6 +11,7 @@ use wasm_bindgen_futures::JsFuture;
 use js_sys::{Uint8Array, Array};
 use std::panic;
 use instant;
+use rapier3d::prelude::*;
 
 // --- CONSTANTS ---
 // OPTIMIZATION: 4x MSAA for SOTA quality
@@ -185,30 +186,30 @@ impl Texture {
             if let Some(window) = web_sys::window() {
                 if let Some(document) = window.document() {
                     if let Ok(canvas_element) = document.create_element("canvas") {
-                        if let Ok(canvas) = canvas_element.dyn_into::<HtmlCanvasElement>() {
-                            canvas.set_width(width);
-                            canvas.set_height(height);
-                            
-                            if let Ok(Some(context)) = canvas.get_context("2d").map(|v| v.and_then(|c| c.dyn_into::<CanvasRenderingContext2d>().ok())) {
-                                if context.draw_image_with_image_bitmap(&bitmap, 0.0, 0.0).is_ok() {
-                                    if let Ok(image_data) = context.get_image_data(0.0, 0.0, width as f64, height as f64) {
-                                        let data = image_data.data();
-                                        queue.write_texture(
-                                            wgpu::ImageCopyTexture {
-                                                texture: &texture,
-                                                mip_level: 0,
-                                                origin: wgpu::Origin3d::ZERO,
-                                                aspect: wgpu::TextureAspect::All,
-                                            },
-                                            &data,
-                                            wgpu::ImageDataLayout {
-                                                offset: 0,
-                                                bytes_per_row: Some(4 * width),
-                                                rows_per_image: Some(height),
-                                            },
-                                            size,
-                                        );
-                                    }
+                        let canvas: HtmlCanvasElement = canvas_element.unchecked_into();
+                        canvas.set_width(width);
+                        canvas.set_height(height);
+                        
+                        if let Ok(Some(context_obj)) = canvas.get_context("2d") {
+                            let context: CanvasRenderingContext2d = context_obj.unchecked_into();
+                            if context.draw_image_with_image_bitmap(&bitmap, 0.0, 0.0).is_ok() {
+                                if let Ok(image_data) = context.get_image_data(0.0, 0.0, width as f64, height as f64) {
+                                    let data = image_data.data();
+                                    queue.write_texture(
+                                        wgpu::ImageCopyTexture {
+                                            texture: &texture,
+                                            mip_level: 0,
+                                            origin: wgpu::Origin3d::ZERO,
+                                            aspect: wgpu::TextureAspect::All,
+                                        },
+                                        &data,
+                                        wgpu::ImageDataLayout {
+                                            offset: 0,
+                                            bytes_per_row: Some(4 * width),
+                                            rows_per_image: Some(height),
+                                        },
+                                        size,
+                                    );
                                 }
                             }
                         }
@@ -488,6 +489,21 @@ pub struct State {
     texture_cache: HashMap<usize, Rc<wgpu::TextureView>>,
     tx: Sender<AssetMessage>,
     rx: Receiver<AssetMessage>,
+
+    // Rapier Physics State
+    physics_pipeline: PhysicsPipeline,
+    island_manager: IslandManager,
+    broad_phase: BroadPhase,
+    narrow_phase: NarrowPhase,
+    rigid_body_set: RigidBodySet,
+    collider_set: ColliderSet,
+    impulse_joint_set: ImpulseJointSet,
+    multibody_joint_set: MultibodyJointSet,
+    ccd_solver: CCDSolver,
+    physics_hooks: Box<dyn PhysicsHooks>,
+    event_handler: Box<dyn EventHandler>,
+    gravity: Vector<f32>,
+    integration_parameters: IntegrationParameters,
 }
 
 impl State {
@@ -807,6 +823,10 @@ impl State {
         // Apply intensity boost to the main light color
         let max_intensity = if self.is_dark_theme { 3.0 } else { 2.5 };
         
+        // Lights Out Logic: If Sun/Moon (Blob) is gone, kill ambient light
+        // This makes the dynamic light the ONLY source of visibility
+        let ambient_mult = if blob_active { 1.0 } else { 0.05 }; // 5% ambient if sun is gone (moonlight remnant)
+
         self.scene_uniform.light = LightUniform {
             position: [light_pos.x, light_pos.y, light_pos.z, 1.0],
             color: [
@@ -815,8 +835,8 @@ impl State {
                 (base_color[2] * intensity_boost).min(max_intensity),
                 1.0
             ],
-            sky_color: self.base_sky_color,
-            ground_color: self.base_ground_color,
+            sky_color: [self.base_sky_color[0] * ambient_mult, self.base_sky_color[1] * ambient_mult, self.base_sky_color[2] * ambient_mult, 1.0],
+            ground_color: [self.base_ground_color[0] * ambient_mult, self.base_ground_color[1] * ambient_mult, self.base_ground_color[2] * ambient_mult, 1.0],
         };
     }
     
@@ -960,12 +980,11 @@ impl State {
                                                             props.set_type(&mime);
                                                             let b = Blob::new_with_u8_array_sequence_and_options(&a, &props).unwrap();
                                                             let w = web_sys::window().unwrap();
-                                                            if let Ok(bmp) = JsFuture::from(w.create_image_bitmap_with_blob(&b).unwrap()).await {
-                                                                if let Ok(bmp) = bmp.dyn_into::<ImageBitmap>() {
-                                                                    let pipeline = if is_srgb { &mipmap_pipeline_srgb } else { &mipmap_pipeline_linear };
-                                                                    let t = Texture::from_bitmap(&dev, &q, bmp, is_srgb, Some(pipeline), Some(&mipmap_layout));
-                                                                    let _ = tx.send(AssetMessage::TextureLoaded { image_index: key, texture_type: type_id, texture: t });
-                                                                }
+                                                            if let Ok(bmp_val) = JsFuture::from(w.create_image_bitmap_with_blob(&b).unwrap()).await {
+                                                                let bmp: ImageBitmap = bmp_val.unchecked_into();
+                                                                let pipeline = if is_srgb { &mipmap_pipeline_srgb } else { &mipmap_pipeline_linear };
+                                                                let t = Texture::from_bitmap(&dev, &q, bmp, is_srgb, Some(pipeline), Some(&mipmap_layout));
+                                                                let _ = tx.send(AssetMessage::TextureLoaded { image_index: key, texture_type: type_id, texture: t });
                                                             }
                                                         });
                                                     }
@@ -1092,6 +1111,23 @@ impl State {
     }
 
     pub fn update(&mut self, mouse_x: f32, mouse_y: f32, screen_width: f32, screen_height: f32) {
+        // Step the Physics Simulation
+        self.physics_pipeline.step(
+            &self.gravity,
+            &self.integration_parameters,
+            &mut self.island_manager,
+            &mut self.broad_phase,
+            &mut self.narrow_phase,
+            &mut self.rigid_body_set,
+            &mut self.collider_set,
+            &mut self.impulse_joint_set,
+            &mut self.multibody_joint_set,
+            &mut self.ccd_solver,
+            None,
+            &*self.physics_hooks,
+            &*self.event_handler,
+        );
+
         // Update cursor light position for 3D scene (only if cursor light is active)
         // Unproject mouse position to 3D space to place light at exact mouse position
         if self.cursor_light_active {
@@ -1917,7 +1953,8 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
     });
 
     // Create static blob mesh (at 0,0,0)
-    let blob_mesh = create_sphere_mesh(&device, &queue, 0.5, 20, &material_layout);
+    // SOTA Optimization: High-Poly Sphere (64 segments) for perfectly smooth silhouette
+    let blob_mesh = create_sphere_mesh(&device, &queue, 0.5, 64, &material_layout);
 
     // Mipmap Generation Pipeline
     let mipmap_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1988,6 +2025,21 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
 
     let (tx, rx) = flume::unbounded();
 
+    // Rapier Initialization
+    let rigid_body_set = RigidBodySet::new();
+    let collider_set = ColliderSet::new();
+    let gravity = vector![0.0, -9.81, 0.0];
+    let integration_parameters = IntegrationParameters::default();
+    let physics_pipeline = PhysicsPipeline::new();
+    let island_manager = IslandManager::new();
+    let broad_phase = BroadPhase::new();
+    let narrow_phase = NarrowPhase::new();
+    let impulse_joint_set = ImpulseJointSet::new();
+    let multibody_joint_set = MultibodyJointSet::new();
+    let ccd_solver = CCDSolver::new();
+    let physics_hooks = Box::new(());
+    let event_handler = Box::new(());
+
     Ok(State {
         surface, device: Rc::new(device), queue: Rc::new(queue), config, depth_texture, depth_view,
         msaa_texture, msaa_view, sample_count: actual_sample_count,
@@ -2003,13 +2055,16 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
         base_light_color: base_light,
         base_sky_color: base_sky,
         base_ground_color: base_ground,
-        blob_exists: false,
-        blob_position: vec3(0.0, 1000.0, 0.0), // Start far away to avoid visual glitch
-        blob_target_position: vec3(0.0, 1000.0, 0.0),
+        blob_exists: true, // PERMANENT BLOB: Always exists to act as the "Sun/Moon"
+        blob_position: vec3(0.0, 5.0, 0.0), // Start above center
+        blob_target_position: vec3(0.0, 5.0, 0.0),
         blob_light_enabled: true,
         blob_mesh,
         blob_dragging: false,
         blob_drag_depth: 0.0,
-        model: None, model_center: Vec3::ZERO, model_extent: 2.0, material_layout, texture_cache: HashMap::new(), tx, rx
+        model: None, model_center: Vec3::ZERO, model_extent: 2.0, material_layout, texture_cache: HashMap::new(), tx, rx,
+        // Rapier fields
+        physics_pipeline, island_manager, broad_phase, narrow_phase, rigid_body_set, collider_set,
+        impulse_joint_set, multibody_joint_set, ccd_solver, physics_hooks, event_handler, gravity, integration_parameters
     })
 }

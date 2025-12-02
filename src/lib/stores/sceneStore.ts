@@ -9,7 +9,7 @@ export const isDynamicLightActive = atom(true);
 
 // --- Light Blob State ---
 // Controls the 3D light blob object
-export const isBlobActive = atom(false);
+export const isBlobActive = atom(true);
 
 // --- Model State ---
 export const activeModel = persistentAtom<'light' | 'dark'>(

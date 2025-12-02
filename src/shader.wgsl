@@ -83,14 +83,14 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     // Gradient Sky based on Y (up)
     let t = 0.5 * (dir.y + 1.0);
     
-    // Simple Day/Night mix based on light intensity or audio?
-    // Let's use Audio to modulate sky color!
-    let base_color = mix(vec3<f32>(0.02, 0.02, 0.05), vec3<f32>(0.1, 0.2, 0.4), t); // Dark Space -> Blueish
-    let beat_color = vec3<f32>(0.5, 0.2, 0.8) * scene.audio.intensity;
+    // Sync with CSS Background (passed via Uniforms)
+    // Interpolate between Ground (bottom) and Sky (top)
+    let base_color = mix(scene.light.ground_color.rgb, scene.light.sky_color.rgb, t);
     
-    // Stars or noise could be added here
+    // Subtle Audio Modulation (optional, keeps it alive)
+    let beat_color = scene.light.color.rgb * scene.audio.intensity * 0.1;
     
-    return vec4<f32>(base_color + beat_color * 0.2, 1.0);
+    return vec4<f32>(base_color + beat_color, 1.0);
 }
 
 // --- GRID RENDERER (High-Fidelity Sound Wave Visualization) ---
@@ -184,34 +184,34 @@ fn fs_grid(in: GridVertexOutput) -> @location(0) vec4<f32> {
         // Line intensity based on audio and wave propagation - increased base visibility
         let line_intensity = 0.6 + wave_intensity * 0.8 + scene.audio.intensity * 0.5;
         
-        // Theme-aware colors: Use sky color as hint for theme
-        // Dark theme: sky is dark, Light theme: sky is brighter
-        let is_dark_theme = scene.light.sky_color.r < 0.1;
+        // Theme-aware colors directly from Uniforms (SOTA Integration)
+        // Use the main light color for the active pulse (accent color)
+        let pulse_color = scene.light.color.rgb;
         
-        // Color shifts slightly with audio intensity
-        // Dark theme: bright cool white/cyan (visible on dark background)
-        // Light theme: darker blue/cyan (visible on light background)
+        // Calculate Luminance to determine theme mode
+        let sky_luminance = dot(scene.light.sky_color.rgb, vec3<f32>(0.299, 0.587, 0.114));
+        let is_dark_mode = sky_luminance < 0.5;
+        
         var base_color: vec3<f32>;
-        var pulse_color: vec3<f32>;
         var glow_color: vec3<f32>;
         var base_alpha: f32;
         var min_alpha: f32;
         var color_mult: f32;
         
-        if (is_dark_theme) {
-            // Dark theme: bright colors
-            base_color = vec3<f32>(0.8, 0.9, 1.0); // Bright cool white/cyan
-            pulse_color = vec3<f32>(0.5, 0.95, 1.0); // Brighter cyan on pulse
-            glow_color = vec3<f32>(0.3, 0.6, 0.9); // Cyan glow
+        if (is_dark_mode) {
+            // Dark Mode: Grid should be brighter/lighter than background
+            // Use Sky Color boosted towards white
+            base_color = mix(scene.light.sky_color.rgb, vec3<f32>(0.8, 0.9, 1.0), 0.7);
+            glow_color = scene.light.sky_color.rgb + vec3<f32>(0.2);
             base_alpha = 0.5;
             min_alpha = 0.4;
             color_mult = 0.7;
         } else {
-            // Light theme: darker, more saturated colors for visibility
-            base_color = vec3<f32>(0.2, 0.4, 0.7); // Darker blue/cyan
-            pulse_color = vec3<f32>(0.1, 0.5, 0.9); // Brighter blue on pulse
-            glow_color = vec3<f32>(0.1, 0.3, 0.6); // Darker blue glow
-            base_alpha = 0.7; // Higher alpha for light theme
+            // Light Mode: Grid should be darker than background
+            // Use Ground Color (earthy) mixed with some dark blue
+            base_color = mix(scene.light.ground_color.rgb, vec3<f32>(0.2, 0.4, 0.6), 0.5);
+            glow_color = scene.light.ground_color.rgb * 0.8;
+            base_alpha = 0.7;
             min_alpha = 0.6;
             color_mult = 0.8;
         }

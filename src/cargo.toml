@@ -17,9 +17,9 @@ log = "0.4.21"
 console_log = "1.0.0"
 
 # WASM (Exakt aufeinander abgestimmte Versionen)
-wasm-bindgen = "=0.2.105"
-wasm-bindgen-futures = "=0.4.55" # Die Version, die zu 0.2.105 passt
-web-sys = { version = "0.3.82", features = [
+wasm-bindgen = "0.2.92"
+wasm-bindgen-futures = "0.4.42"
+web-sys = { version = "0.3.69", features = [
     "Window",
     "Document",
     "Element",
@@ -64,6 +64,8 @@ flume = "0.11.0"
 bytemuck = { version = "1.16.0", features = ["derive"] }
 instant = "0.1.12"
 
+# Physics
+rapier3d = { version = "0.17.2", features = ["wasm-bindgen"] }
 
 [features]
 default = ["console_error_panic_hook"]

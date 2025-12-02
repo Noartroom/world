@@ -23,7 +23,7 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
 
   <div
     id="time-display"
-    class="time-display magnetic-ui"
+    class="time-display"
   ></div>
   
   <canvas id={CANVAS_ID} tabindex="0" aria-label="3D Canvas"></canvas>
@@ -31,7 +31,8 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
 </div>
 
 <script>
-  import init, { startRenderer } from 'public/pkg/model_renderer.js?v=gpu_fix_6';
+  // @ts-ignore
+  import init, { startRenderer } from 'public/pkg/model_renderer.js?v=gpu_fix_6'; /* adjust path for prod/dev */
   import { theme, activeModel, onSet, isDynamicLightActive, isBlobActive } from '../lib/stores/sceneStore';
   import { getAudioData, getStereoData, getComprehensiveAudioAnalysis } from '../lib/stores/audioStore';
 
@@ -207,8 +208,8 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
                     const blobPos = state.getBlobScreenPosition();
                     // Check if we got a valid position (array length 2)
                     if (blobPos && blobPos.length === 2) {
-                        const x = blobPos[0];
-                        const y = blobPos[1];
+                        const x = blobPos;
+                        const y = blobPos;
                         
                         // Only apply if inside screen bounds
                         if (x >= 0 && x <= 1 && y >= 0 && y <= 1) {
@@ -262,7 +263,7 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
               // Calculate repulsion force with smooth easing
               // Power function makes the falloff sharper, so effects only happen when closer
               const intensity = Math.pow(1 - dist / maxDist, 2);
-              const force = intensity * 40; // Max 40px push
+              const force = intensity * 80; // Max 40px push
               const angle = Math.atan2(dy, dx);
               
               const moveX = Math.cos(angle) * force;
@@ -302,44 +303,34 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
       let ground = { r: 0, g: 0, b: 0 };
       let light = { r: 0, g: 0, b: 0 };
       
+      // Time-of-Day dependent top layer
       if (time < 0.25) { // Night -> Sunrise
           const t = time / 0.25;
-          // Night: Dark Blue -> Sunrise: Orange/Pink
-          sky = lerpColor({r:0.05, g:0.05, b:0.1}, {r:0.8, g:0.5, b:0.4}, t);
-          ground = lerpColor({r:0.01, g:0.01, b:0.02}, {r:0.2, g:0.15, b:0.1}, t);
-          light = lerpColor({r:0.2, g:0.2, b:0.4}, {r:1.0, g:0.8, b:0.6}, t);
+          // Light: White Moonlight -> Morning Orange
+          light = lerpColor({r:0.9, g:0.95, b:1.0}, {r:1.0, g:0.6, b:0.3}, t);
       } else if (time < 0.5) { // Sunrise -> Noon
           const t = (time - 0.25) / 0.25;
-          // Sunrise -> Blue Sky
-          sky = lerpColor({r:0.8, g:0.5, b:0.4}, {r:0.4, g:0.7, b:1.0}, t);
-          ground = lerpColor({r:0.2, g:0.15, b:0.1}, {r:0.2, g:0.3, b:0.2}, t); // Earthy tone
-          light = lerpColor({r:1.0, g:0.8, b:0.6}, {r:1.0, g:1.0, b:0.95}, t); // Warm -> Bright White
+          // Light: Orange -> Bright Yellow
+          light = lerpColor({r:1.0, g:0.6, b:0.3}, {r:1.0, g:0.95, b:0.8}, t);
       } else if (time < 0.75) { // Noon -> Sunset
           const t = (time - 0.5) / 0.25;
-          // Blue Sky -> Sunset
-          sky = lerpColor({r:0.4, g:0.7, b:1.0}, {r:0.9, g:0.4, b:0.2}, t);
-          ground = lerpColor({r:0.2, g:0.3, b:0.2}, {r:0.2, g:0.1, b:0.05}, t);
-          light = lerpColor({r:1.0, g:1.0, b:0.95}, {r:1.0, g:0.6, b:0.3}, t); // Bright White -> Golden
+          // Light: Yellow -> Sunset Orange
+          light = lerpColor({r:1.0, g:0.95, b:0.8}, {r:1.0, g:0.5, b:0.2}, t);
       } else { // Sunset -> Night
           const t = (time - 0.75) / 0.25;
-          // Sunset -> Night
-          sky = lerpColor({r:0.9, g:0.4, b:0.2}, {r:0.05, g:0.05, b:0.1}, t);
-          ground = lerpColor({r:0.2, g:0.1, b:0.05}, {r:0.01, g:0.01, b:0.02}, t);
-          light = lerpColor({r:1.0, g:0.6, b:0.3}, {r:0.2, g:0.2, b:0.4}, t);
+          // Light: Orange -> White Moonlight
+          light = lerpColor({r:1.0, g:0.5, b:0.2}, {r:0.9, g:0.95, b:1.0}, t);
       }
       
       state.setEnvironmentLight(
-          sky.r, sky.g, sky.b,
-          ground.r, ground.g, ground.b,
+          0, 0, 0, // No Sky
+          0, 0, 0, // No Ground
           light.r, light.g, light.b
       );
       
       // Update CSS gradient to match
       if (container) {
-          const cssGradient = `linear-gradient(to bottom,
-              rgb(${Math.floor(sky.r*255)}, ${Math.floor(sky.g*255)}, ${Math.floor(sky.b*255)}) 0%,
-              rgb(${Math.floor(ground.r*255)}, ${Math.floor(ground.g*255)}, ${Math.floor(ground.b*255)}) 100%)`;
-          container.style.background = cssGradient;
+          container.style.background = 'transparent'; // No background at all
       }
 
       // Update Time Display (Day XX:XX)
@@ -405,26 +396,23 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
          if (state && state.setCursorLightActive) {
              state.setCursorLightActive(newValue);
          }
+         // Toggle the CSS overlay to make the effect visible
+         document.documentElement.style.setProperty('--light-opacity', newValue ? '0.9' : '0');
       });
       
       // Initialize cursor light state (enabled by default)
       if (state && state.setCursorLightActive) {
           const initialDynamicLight = isDynamicLightActive.get();
           state.setCursorLightActive(initialDynamicLight);
+          document.documentElement.style.setProperty('--light-opacity', initialDynamicLight ? '0.9' : '0');
       }
 
       // Handle light blob spawning/despawning ONLY (separate from CSS lighting)
       blobUnsub = onSet(isBlobActive, ({ newValue }) => {
-         if (!newValue && state) {
-             // Despawn blob
-             if (state.despawnBlob) {
-                 state.despawnBlob();
-             }
+         if (!newValue && state?.despawnBlob) {
+             state.despawnBlob();
              isDraggingBlob = false;
-             hasSpawnedSinceActive = false; // Reset spawn flag
-         } else if (newValue) {
-            // On activation, set flag to spawn on next mouse move
-            hasSpawnedSinceActive = false;
+             hasSpawnedSinceActive = false; // Reset the flag so it can be spawned again if re-enabled
          }
       });
 
@@ -633,6 +621,12 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
     container.addEventListener('pointermove', (e: PointerEvent) => {
       if (!state || !canvas) return;
 
+      // SOTA: Update CSS light position on every move for responsive feel
+      if (isDynamicLightActive.get()) {
+        document.documentElement.style.setProperty('--light-x', `${e.clientX}px`);
+        document.documentElement.style.setProperty('--light-y', `${e.clientY}px`);
+      }
+
       const now = performance.now();
       if (!cachedCanvasRect || (now - lastCachedRectTime) > RECT_CACHE_DURATION) {
         cachedCanvasRect = canvas.getBoundingClientRect();
@@ -645,6 +639,12 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
       lastCanvasX = x;
       lastCanvasY = y;
 
+      // SOTA: Spawn blob on first mouse move to prevent initial position glitch
+      if (isBlobActive.get() && !hasSpawnedSinceActive && state.spawnBlob) {
+        state.spawnBlob(x, y, rect.width, rect.height);
+        hasSpawnedSinceActive = true;
+      }
+
       if (isDragging && !isDraggingBlob) {
         const deltaX = e.clientX - lastX;
         const deltaY = e.clientY - lastY;
@@ -653,11 +653,6 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
         lastY = e.clientY;
       }
 
-      // Spawn blob on first mouse move after activation
-      if (isBlobActive.get() && !hasSpawnedSinceActive && state.spawnBlob) {
-        state.spawnBlob(x, y, rect.width, rect.height);
-        hasSpawnedSinceActive = true;
-      }
 
       const dynamicLightEnabled = isDynamicLightActive.get();
       if (dynamicLightEnabled || isDraggingBlob) {
@@ -750,12 +745,12 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
   inset: 0;
   pointer-events: none; /* clicks go through */
   opacity: var(--light-opacity, 0);
-  transition: opacity 0.1s ease;
+  transition: opacity 0.3s ease;
   /* Theme-based gradient: cool white for dark theme */
   background: radial-gradient(
     circle 800px at var(--light-x, 50%) var(--light-y, 50%),
-    rgba(240, 245, 255, 0.6) 0%,
-    rgba(200, 220, 255, 0.2) 40%,
+    rgba(240, 245, 255, 0.9) 0%,
+    rgba(200, 220, 255, 0.3) 40%,
     rgba(0, 0, 0, 0.0) 70%
   );
   mix-blend-mode: screen;
