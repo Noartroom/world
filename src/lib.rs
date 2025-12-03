@@ -11,7 +11,6 @@ use wasm_bindgen_futures::JsFuture;
 use js_sys::{Uint8Array, Array};
 use std::panic;
 use instant;
-use rapier3d::prelude::*;
 
 // --- CONSTANTS ---
 // OPTIMIZATION: 4x MSAA for SOTA quality
@@ -42,7 +41,6 @@ struct LightUniform {
     position: [f32; 4],
     color: [f32; 4],
     sky_color: [f32; 4],
-    ground_color: [f32; 4],
 }
 
 // NEW: Uniform to move the blob cheaply on GPU
@@ -473,7 +471,6 @@ pub struct State {
     // Base colors for lighting (modified by theme or manual override)
     base_light_color: [f32; 4],
     base_sky_color: [f32; 4],
-    base_ground_color: [f32; 4],
     
     blob_exists: bool,
     blob_position: Vec3,
@@ -489,21 +486,6 @@ pub struct State {
     texture_cache: HashMap<usize, Rc<wgpu::TextureView>>,
     tx: Sender<AssetMessage>,
     rx: Receiver<AssetMessage>,
-
-    // Rapier Physics State
-    physics_pipeline: PhysicsPipeline,
-    island_manager: IslandManager,
-    broad_phase: BroadPhase,
-    narrow_phase: NarrowPhase,
-    rigid_body_set: RigidBodySet,
-    collider_set: ColliderSet,
-    impulse_joint_set: ImpulseJointSet,
-    multibody_joint_set: MultibodyJointSet,
-    ccd_solver: CCDSolver,
-    physics_hooks: Box<dyn PhysicsHooks>,
-    event_handler: Box<dyn EventHandler>,
-    gravity: Vector<f32>,
-    integration_parameters: IntegrationParameters,
 }
 
 impl State {
@@ -752,12 +734,10 @@ impl State {
             // Dark theme defaults - Deep Space / Cyber
             self.base_light_color = [0.96, 0.98, 1.0, 1.0]; // Crisp cool white
             self.base_sky_color = [0.08, 0.1, 0.15, 1.0]; // Deep midnight blue
-            self.base_ground_color = [0.02, 0.02, 0.03, 1.0]; // Almost black void
         } else {
             // Light theme defaults - Dreamy / Ethereal
             self.base_light_color = [1.0, 0.96, 0.92, 1.0]; // Soft warm sun
             self.base_sky_color = [0.92, 0.94, 0.98, 1.0]; // Pale blue sky
-            self.base_ground_color = [0.25, 0.22, 0.20, 1.0]; // Warm earthy grey
         }
 
         web_sys::console::log_1(&format!("Theme updated to: {}", if is_dark { "Dark" } else { "Light" }).into());
@@ -766,9 +746,8 @@ impl State {
     }
     
     #[wasm_bindgen(js_name = "setEnvironmentLight")]
-    pub fn set_environment_light(&mut self, sky_r: f32, sky_g: f32, sky_b: f32, ground_r: f32, ground_g: f32, ground_b: f32, light_r: f32, light_g: f32, light_b: f32) {
+    pub fn set_environment_light(&mut self, sky_r: f32, sky_g: f32, sky_b: f32, light_r: f32, light_g: f32, light_b: f32) {
         self.base_sky_color = [sky_r, sky_g, sky_b, 1.0];
-        self.base_ground_color = [ground_r, ground_g, ground_b, 1.0];
         self.base_light_color = [light_r, light_g, light_b, 1.0];
         // Don't log every frame, it kills performance
         self.update_theme_lighting();
@@ -815,7 +794,6 @@ impl State {
                 position: [light_pos.x, light_pos.y, light_pos.z, 1.0],
                 color: [0.0, 0.0, 0.0, 0.0],
                 sky_color: [0.0, 0.0, 0.0, 1.0], // Also kill ambient to be sure
-                ground_color: [0.0, 0.0, 0.0, 1.0],
             };
             return;
         }
@@ -848,7 +826,6 @@ impl State {
                 1.0
             ],
             sky_color: [self.base_sky_color[0] * ambient_mult, self.base_sky_color[1] * ambient_mult, self.base_sky_color[2] * ambient_mult, 1.0],
-            ground_color: [self.base_ground_color[0] * ambient_mult, self.base_ground_color[1] * ambient_mult, self.base_ground_color[2] * ambient_mult, 1.0],
         };
     }
     
@@ -1123,23 +1100,6 @@ impl State {
     }
 
     pub fn update(&mut self, mouse_x: f32, mouse_y: f32, screen_width: f32, screen_height: f32) {
-        // Step the Physics Simulation
-        self.physics_pipeline.step(
-            &self.gravity,
-            &self.integration_parameters,
-            &mut self.island_manager,
-            &mut self.broad_phase,
-            &mut self.narrow_phase,
-            &mut self.rigid_body_set,
-            &mut self.collider_set,
-            &mut self.impulse_joint_set,
-            &mut self.multibody_joint_set,
-            &mut self.ccd_solver,
-            None,
-            &*self.physics_hooks,
-            &*self.event_handler,
-        );
-
         // Update cursor light position for 3D scene (only if cursor light is active)
         // Unproject mouse position to 3D space to place light at exact mouse position
         if self.cursor_light_active {
@@ -1856,7 +1816,6 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
     // Initial colors for Dark Theme (default)
     let base_light = [0.96, 0.98, 1.0, 1.0];
     let base_sky = [0.08, 0.1, 0.15, 1.0];
-    let base_ground = [0.02, 0.02, 0.03, 1.0];
 
     let scene_uniform = SceneUniform {
         camera: CameraUniform { view_proj: Mat4::IDENTITY.to_cols_array_2d(), inv_view_proj: Mat4::IDENTITY.to_cols_array_2d(), camera_pos: [0.0; 4] },
@@ -1864,7 +1823,6 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
             position: [5.0, 5.0, 5.0, 1.0],
             color: base_light,
             sky_color: base_sky,
-            ground_color: base_ground,
         },
         audio: AudioUniform { intensity: 0.0, balance: 0.0, _pad1: 0.0, _pad2: 0.0 },
         blob: BlobUniform { position: [0.0; 4], color: [1.0; 4] },
@@ -2038,21 +1996,6 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
 
     let (tx, rx) = flume::unbounded();
 
-    // Rapier Initialization
-    let rigid_body_set = RigidBodySet::new();
-    let collider_set = ColliderSet::new();
-    let gravity = vector![0.0, -9.81, 0.0];
-    let integration_parameters = IntegrationParameters::default();
-    let physics_pipeline = PhysicsPipeline::new();
-    let island_manager = IslandManager::new();
-    let broad_phase = BroadPhase::new();
-    let narrow_phase = NarrowPhase::new();
-    let impulse_joint_set = ImpulseJointSet::new();
-    let multibody_joint_set = MultibodyJointSet::new();
-    let ccd_solver = CCDSolver::new();
-    let physics_hooks = Box::new(());
-    let event_handler = Box::new(());
-
     Ok(State {
         surface, device: Rc::new(device), queue: Rc::new(queue), config, depth_texture, depth_view,
         msaa_texture, msaa_view, sample_count: actual_sample_count,
@@ -2067,7 +2010,6 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
         is_dark_theme: true, // Default to dark theme
         base_light_color: base_light,
         base_sky_color: base_sky,
-        base_ground_color: base_ground,
         blob_exists: false, // Default hidden
         blob_position: vec3(0.0, 5.0, 0.0), // Start above center
         blob_target_position: vec3(0.0, 5.0, 0.0),
@@ -2076,8 +2018,5 @@ pub async fn start_renderer(canvas: HtmlCanvasElement) -> Result<State, JsValue>
         blob_dragging: false,
         blob_drag_depth: 0.0,
         model: None, model_center: Vec3::ZERO, model_extent: 2.0, material_layout, texture_cache: HashMap::new(), tx, rx,
-        // Rapier fields
-        physics_pipeline, island_manager, broad_phase, narrow_phase, rigid_body_set, collider_set,
-        impulse_joint_set, multibody_joint_set, ccd_solver, physics_hooks, event_handler, gravity, integration_parameters
     })
 }

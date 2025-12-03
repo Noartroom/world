@@ -15,7 +15,6 @@ struct LightUniform {
     position: vec4<f32>,
     color: vec4<f32>,
     sky_color: vec4<f32>,
-    ground_color: vec4<f32>,
 };
 
 // NEW: Uniform for the Blob position
@@ -84,8 +83,9 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     let t = 0.5 * (dir.y + 1.0);
     
     // Sync with CSS Background (passed via Uniforms)
-    // Interpolate between Ground (bottom) and Sky (top)
-    let base_color = mix(scene.light.ground_color.rgb, scene.light.sky_color.rgb, t);
+    // Interpolate between Ground (bottom - derived from sky) and Sky (top)
+    // Optimization: Ground is just 20% of sky color (Shadow)
+    let base_color = mix(scene.light.sky_color.rgb * 0.2, scene.light.sky_color.rgb, t);
     
     // Subtle Audio Modulation (optional, keeps it alive)
     let beat_color = scene.light.color.rgb * scene.audio.intensity * 0.1;
@@ -208,9 +208,9 @@ fn fs_grid(in: GridVertexOutput) -> @location(0) vec4<f32> {
             color_mult = 0.7;
         } else {
             // Light Mode: Grid should be darker than background
-            // Use Ground Color (earthy) mixed with some dark blue
-            base_color = mix(scene.light.ground_color.rgb, vec3<f32>(0.2, 0.4, 0.6), 0.5);
-            glow_color = scene.light.ground_color.rgb * 0.8;
+            // Use darker version of sky mixed with some dark blue
+            base_color = mix(scene.light.sky_color.rgb * 0.3, vec3<f32>(0.2, 0.4, 0.6), 0.5);
+            glow_color = scene.light.sky_color.rgb * 0.2;
             base_alpha = 0.7;
             min_alpha = 0.6;
             color_mult = 0.8;
@@ -398,8 +398,8 @@ fn fs_model(in: ModelOutput) -> @location(0) vec4<f32> {
     // 0.2 to 0.8 gives a smooth transition across the equator.
     let w = smoothstep(0.2, 0.8, w_linear);
     
-    // Mix with a bias: darken the ground color significantly to simulate soft occlusion shadows at the base
-    let ambient_light = mix(scene.light.ground_color.rgb * 0.6, scene.light.sky_color.rgb, w);
+    // Mix with a bias: darken the ground color significantly (10% of sky) to simulate soft occlusion shadows at the base
+    let ambient_light = mix(scene.light.sky_color.rgb * 0.1, scene.light.sky_color.rgb, w);
     
     let ambient = ambient_light * albedo * occlusion;
     

@@ -64,8 +64,5 @@ flume = "0.11.0"
 bytemuck = { version = "1.16.0", features = ["derive"] }
 instant = "0.1.12"
 
-# Physics
-rapier3d = { version = "0.17.2", features = ["wasm-bindgen"] }
-
 [features]
 default = ["console_error_panic_hook"]
