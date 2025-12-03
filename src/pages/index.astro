@@ -127,7 +127,7 @@ import Renderer from '@/components/Renderer.astro';
   function formatTime(hours: number): string {
     const h = Math.floor(hours);
     const m = Math.floor((hours - h) * 60);
-    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+    return `01. ${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
   }
 
   // Update display when store changes
@@ -138,14 +138,25 @@ import Renderer from '@/components/Renderer.astro';
   });
 
   if (timeDisplay) {
-    // Mouse wheel interaction
+    // Fast Scroll (Wheel)
     timeDisplay.addEventListener('wheel', (e) => {
       e.preventDefault();
-      const delta = e.deltaY > 0 ? 0.5 : -0.5; // Change by 30 mins
+      
+      // Determine sensitivity based on scroll speed/intensity
+      // Standard deltaY is ~100.
+      const magnitude = Math.abs(e.deltaY);
+      let increment = 0.5; // Default 30 mins
+
+      // Fast Scroll: If scrolling hard (>150) or holding Shift
+      if (magnitude > 150 || e.shiftKey) {
+        increment = 2.0; // 2 Hours
+      } else if (magnitude > 50) {
+        increment = 1.0; // 1 Hour
+      }
+
+      const delta = e.deltaY > 0 ? increment : -increment;
       changeTime(delta);
     }, { passive: false });
-
-    // Click to focus/enable keyboard support is handled by tabindex
 
     // Keyboard interaction
     timeDisplay.addEventListener('keydown', (e) => {
@@ -195,7 +206,7 @@ import Renderer from '@/components/Renderer.astro';
     z-index: 0; /* Default: Behind everything */
     opacity: 0.3; /* Default: Dim */
     transform: scale(0.95);
-    pointer-events: none; 
+    pointer-events: none;
     display: flex;
     justify-content: center;
     align-items: center;

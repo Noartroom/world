@@ -806,12 +806,24 @@ impl State {
     fn update_theme_lighting(&mut self) {
         let light_pos = self.light_pos_3d;
         
+        let blob_active = self.blob_exists && self.blob_light_enabled;
+        let cursor_active = self.cursor_light_active;
+        
+        // If NO light source is active, zero out the intensity completely
+        if !blob_active && !cursor_active {
+            self.scene_uniform.light = LightUniform {
+                position: [light_pos.x, light_pos.y, light_pos.z, 1.0],
+                color: [0.0, 0.0, 0.0, 0.0],
+                sky_color: [0.0, 0.0, 0.0, 1.0], // Also kill ambient to be sure
+                ground_color: [0.0, 0.0, 0.0, 1.0],
+            };
+            return;
+        }
+
         // Increase intensity for both blob and cursor lights
         // Base boost: 2.0x for all lights
         // Additional boost for blob: 0.5x
         // Additional boost for cursor light: 1.1x (makes dynamic light more intense)
-        let blob_active = self.blob_exists && self.blob_light_enabled;
-        let cursor_active = self.cursor_light_active;
         let base_intensity_boost = 2.0; // Base boost for all lights
         let blob_additional_boost = if blob_active { 0.5 } else { 0.0 }; // Extra boost for blob
         let cursor_additional_boost = if cursor_active && !blob_active { 1.1 } else { 0.0 }; // Extra boost for cursor light when it's the only active light

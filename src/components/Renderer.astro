@@ -295,29 +295,47 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
       // Sunrise (6am - 0.25), Noon (12pm - 0.5), Sunset (6pm - 0.75), Night
       
       let light = { r: 0, g: 0, b: 0 };
+      let sky = { r: 0, g: 0, b: 0 };
+      let ground = { r: 0, g: 0, b: 0 };
       
       // Time-of-Day dependent top layer
       if (time < 0.25) { // Night -> Sunrise (00:00 - 06:00)
           const t = time / 0.25;
           // Light: White Moonlight -> Morning Orange
           light = lerpColor({r:0.9, g:0.95, b:1.0}, {r:1.0, g:0.6, b:0.3}, t);
+          // Sky: Deep Night Blue -> Dawn Orange/Pink
+          sky = lerpColor({r:0.05, g:0.05, b:0.2}, {r:0.8, g:0.5, b:0.3}, t);
+          // Ground: Black -> Dark Brown
+          ground = lerpColor({r:0.0, g:0.0, b:0.05}, {r:0.2, g:0.1, b:0.05}, t);
       } else if (time < 0.5) { // Sunrise -> Noon (06:00 - 12:00)
           const t = (time - 0.25) / 0.25;
           // Light: Orange -> Bright Yellow
           light = lerpColor({r:1.0, g:0.6, b:0.3}, {r:1.0, g:0.95, b:0.8}, t);
+          // Sky: Dawn Orange/Pink -> Day Blue
+          sky = lerpColor({r:0.8, g:0.5, b:0.3}, {r:0.8, g:0.9, b:1.0}, t);
+          // Ground: Dark Brown -> Grey
+          ground = lerpColor({r:0.2, g:0.1, b:0.05}, {r:0.2, g:0.2, b:0.2}, t);
       } else if (time < 0.75) { // Noon -> Sunset (12:00 - 18:00)
           const t = (time - 0.5) / 0.25;
           // Light: Yellow -> Sunset Orange
           light = lerpColor({r:1.0, g:0.95, b:0.8}, {r:1.0, g:0.5, b:0.2}, t);
+          // Sky: Day Blue -> Sunset Orange
+          sky = lerpColor({r:0.8, g:0.9, b:1.0}, {r:0.8, g:0.4, b:0.2}, t);
+          // Ground: Grey -> Dark Brown
+          ground = lerpColor({r:0.2, g:0.2, b:0.2}, {r:0.1, g:0.05, b:0.02}, t);
       } else { // Sunset -> Night (18:00 - 24:00)
           const t = (time - 0.75) / 0.25;
           // Light: Orange -> White Moonlight
           light = lerpColor({r:1.0, g:0.5, b:0.2}, {r:0.9, g:0.95, b:1.0}, t);
+          // Sky: Sunset Orange -> Deep Night Blue
+          sky = lerpColor({r:0.8, g:0.4, b:0.2}, {r:0.05, g:0.05, b:0.2}, t);
+          // Ground: Dark Brown -> Black
+          ground = lerpColor({r:0.1, g:0.05, b:0.02}, {r:0.0, g:0.0, b:0.05}, t);
       }
       
       state.setEnvironmentLight(
-          0, 0, 0, // No Sky
-          0, 0, 0, // No Ground
+          sky.r, sky.g, sky.b,
+          ground.r, ground.g, ground.b,
           light.r, light.g, light.b
       );
   }
