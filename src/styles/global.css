@@ -235,3 +235,30 @@ body.layer-back-active #layer-back .cube-container {
   opacity: 1;
   transition: transform 1.5s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 1s ease-out;
 }
+
+
+/* --- Idle Mode (Auto-hide UI) --- */
+
+/* Add transitions to layers that might not have them on the container level */
+#layer-persistent .global-controls {
+  transition: opacity 0.5s ease, transform 0.3s ease, visibility 0s linear 0s;
+}
+
+#layer-front :global(.iamf-player) {
+  transition: opacity 0.5s ease, visibility 0s linear 0s;
+}
+
+/* When idle, fade out controls (Buttons & Player) but keep text/titles visible */
+body.user-idle #layer-persistent .global-controls {
+  opacity: 0 !important;
+  visibility: hidden;
+  /* Delay visibility hide until opacity is done (1.5s) */
+  transition: opacity 1.5s ease-in-out, transform 0.3s ease, visibility 0s linear 1.5s !important;
+}
+
+body.user-idle #layer-front :global(.iamf-player) {
+  opacity: 0 !important;
+  visibility: hidden;
+  /* Delay visibility hide until opacity is done (1.5s) */
+  transition: opacity 1.5s ease-in-out, visibility 0s linear 1.5s !important;
+}

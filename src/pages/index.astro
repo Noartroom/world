@@ -205,6 +205,56 @@ import Renderer from '@/components/Renderer.astro';
        }
     }, { passive: false });
   }
+
+</script>
+
+<script is:inline>
+  // --- Idle Detection Logic ---
+  // Using inline script to ensure it runs independently of module dependencies
+  console.log('Idle detection initialized');
+  let idleTimer;
+  let idleTimeoutDuration = 30000; // Start with 30 seconds
+  let lastMouseX = 0;
+  let lastMouseY = 0;
+
+  function resetIdleTimer() {
+    // If we were idle, remove the class
+    if (document.body.classList.contains('user-idle')) {
+      console.log('User active - waking up UI');
+      document.body.classList.remove('user-idle');
+    }
+
+    // Reset the timer
+    clearTimeout(idleTimer);
+    idleTimer = window.setTimeout(() => {
+      console.log('User idle - fading out UI');
+      document.body.classList.add('user-idle');
+      // After first disappearance, reduce timeout to 10 seconds
+      idleTimeoutDuration = 10000;
+    }, idleTimeoutDuration);
+  }
+
+  // Ignore small mouse movements (jitter)
+  function handleMouseMove(e) {
+    if (Math.abs(e.clientX - lastMouseX) > 2 || Math.abs(e.clientY - lastMouseY) > 2) {
+      lastMouseX = e.clientX;
+      lastMouseY = e.clientY;
+      resetIdleTimer();
+    }
+  }
+
+  // List of events that constitute "user interaction"
+  const userEvents = ['mousedown', 'click', 'keypress', 'touchstart', 'touchmove', 'wheel', 'scroll'];
+
+  userEvents.forEach(event => {
+    window.addEventListener(event, resetIdleTimer, { passive: true });
+  });
+  
+  // Handle mousemove separately
+  window.addEventListener('mousemove', handleMouseMove, { passive: true });
+
+  // Start the timer initially
+  resetIdleTimer();
 </script>
 
 <style>
