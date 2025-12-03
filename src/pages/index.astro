@@ -15,12 +15,12 @@ import Renderer from '@/components/Renderer.astro';
         
         <div class="divider"></div>
 
-        <button id="themeToggle" class="global-toggle">Toggle Theme</button>
-        <button id="modelToggle" class="global-toggle">Switch Model</button>
-        <button id="light-engine-toggle" class="global-toggle">Toggle Dynamic Light</button>
-        <button id="blob-toggle" class="global-toggle">Toggle Light Blob</button>
+        <button id="themeToggle" class="global-toggle" aria-label="Toggle Dark/Light Theme">Toggle Theme</button>
+        <button id="modelToggle" class="global-toggle" aria-label="Switch 3D Model">Switch Model</button>
+        <button id="light-engine-toggle" class="global-toggle" aria-label="Toggle Dynamic Cursor Light">Toggle Dynamic Light</button>
+        <button id="blob-toggle" class="global-toggle" aria-label="Toggle Light Blob Effect">Toggle Light Blob</button>
         
-        <div id="time-display" class="global-toggle time-control" tabindex="0" role="button" aria-label="Change time of day">
+        <div id="time-display" class="global-toggle time-control" tabindex="0" role="slider" aria-label="Time of Day Control. Swipe up/down to change time." aria-valuemin="0" aria-valuemax="24">
           <span class="time-label">TIME</span>
           <span class="time-value">12:00</span>
         </div>
@@ -179,6 +179,31 @@ import Renderer from '@/components/Renderer.astro';
         changeTime(-0.5);
       }
     });
+
+    // Touch Interaction (Mobile Swipe)
+    let touchStartY = 0;
+    timeDisplay.addEventListener('touchstart', (e) => {
+      touchStartY = e.touches[0].clientY;
+    }, { passive: true });
+
+    timeDisplay.addEventListener('touchmove', (e) => {
+       // Prevent page scroll when interacting with the time control
+       if (e.cancelable) e.preventDefault();
+       
+       const currentY = e.touches[0].clientY;
+       const deltaY = currentY - touchStartY;
+       
+       // Threshold to avoid accidental jitters
+       if (Math.abs(deltaY) > 5) {
+           // Drag UP = Increment Time (Natural scrolling feeling)
+           // Drag DOWN = Decrement Time
+           const direction = deltaY > 0 ? -1 : 1;
+           
+           // Smoother increments for touch
+           changeTime(direction * 0.15);
+           touchStartY = currentY; // Reset for continuous drag
+       }
+    }, { passive: false });
   }
 </script>
 
@@ -311,6 +336,22 @@ import Renderer from '@/components/Renderer.astro';
   .global-toggle:hover {
     background: rgba(240, 245, 255, 0.15);
     transform: translateZ(5px) scale(1.05);
+  }
+  
+  /* Mobile Improvements */
+  @media (max-width: 768px) {
+    .global-controls {
+       /* Move to bottom right on mobile for better reachability */
+       top: auto;
+       bottom: 5rem; /* Above audio player */
+       right: 1rem;
+       max-width: 180px;
+    }
+    
+    .global-toggle {
+        padding: 0.8em 1.2em; /* Larger touch targets */
+        font-size: 1rem;
+    }
   }
 
   .time-control {

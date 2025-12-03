@@ -24,6 +24,15 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
     id="time-display"
     class="time-display"
   ></div>
+
+  <!-- Low Power Mode Fallback -->
+  <div id="fallback-container" class="fallback-container hidden">
+      <img id="fallback-image" src="/models/fallback-light.svg" alt="3D Model Fallback (Low Power Mode)" />
+      <div class="fallback-controls">
+          <p>Low Power Mode Enabled</p>
+          <button id="force-3d-btn" class="force-btn">Enable 3D (High Performance)</button>
+      </div>
+  </div>
   
   <canvas id={CANVAS_ID} tabindex="0" aria-label="3D Canvas"></canvas>
   <div class="css-light-overlay"></div>
@@ -35,6 +44,7 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
   import { theme, activeModel, onSet, isDynamicLightActive, isBlobActive } from '../lib/stores/sceneStore';
   import { getAudioData, getStereoData, getComprehensiveAudioAnalysis } from '../lib/stores/audioStore';
   import { timeStore } from '../lib/stores/timeStore';
+  import { deviceState, initDeviceDetection } from '../lib/stores/deviceStore';
 
     // DOM Elemente
   const container = document.getElementById('renderer-container-id');
@@ -52,6 +62,7 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
   let modelUnsub: (() => void) | null = null;
   let timeUnsub: (() => void) | null = null;
   let isLoadingModel = false; // Prevent concurrent model loads
+  let isFallbackMode = false;
 
   // Performance Monitoring (SOTA Guardrails)
   let lastFrameTime = performance.now();
@@ -63,6 +74,9 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
   // DOM Elemente
   const canvas: HTMLCanvasElement | null = CANVAS_ID ? document.getElementById(CANVAS_ID) as HTMLCanvasElement : null;
   const loader = document.getElementById('loader');
+  const fallbackContainer = document.getElementById('fallback-container');
+  const fallbackImage = document.getElementById('fallback-image') as HTMLImageElement;
+  const force3dBtn = document.getElementById('force-3d-btn');
 
   // Input State
   let isDragging = false;
@@ -340,12 +354,28 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
   }
 
   // --- Initialization ---
-  async function start() {
+  async function start(forceHighPerformance = false) {
     if (!canvas) return;
 
+    // Detect Device Capabilities
+    initDeviceDetection();
+    const device = deviceState.get();
+
+    // Check if we should use fallback
+    if (!forceHighPerformance && (device.isLowPower || !device.hasWebGPU)) {
+      activateFallbackMode();
+      return;
+    }
+
+    // Initialize 3D Renderer
     try {
+      if (loader) loader.classList.remove('hidden');
       await init();
       state = await startRenderer(canvas);
+      
+      // Hide fallback if it was visible
+      if (fallbackContainer) fallbackContainer.classList.add('hidden');
+      if (canvas) canvas.style.display = 'block';
       
       // 1. Theme Sync - Initialize lighting based on current theme
       if (theme) {
@@ -393,6 +423,11 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
              hasSpawnedSinceActive = false; // Reset the flag so it can be spawned again if re-enabled
          }
       });
+
+      // Initialize Blob State (Ensure it syncs with store, especially if default is false)
+      if (state && state.despawnBlob && !isBlobActive.get()) {
+          state.despawnBlob();
+      }
 
       // 1.6 Model Switching
       let isInitialLoad = true; // Track if we're doing the initial load
@@ -497,10 +532,40 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
       console.error("Initialization failed. Details below:");
       if (e.stack) console.error("Stack:", e.stack);
       
+      // If WebGPU init fails, fall back!
+      activateFallbackMode();
+      
       if (loader) loader.textContent = "GPU ERROR: " + e; // Zeige Fehler im UI an
       // Ensure we kill any zombie loops
       cleanup();
     }
+  }
+
+  function activateFallbackMode() {
+      isFallbackMode = true;
+      if (loader) loader.classList.add('hidden');
+      if (canvas) canvas.style.display = 'none';
+      if (fallbackContainer) fallbackContainer.classList.remove('hidden');
+
+      // Sync Fallback Theme
+      themeUnsub = onSet(theme, ({ newValue }) => {
+          updateFallbackImage(newValue);
+      });
+      updateFallbackImage(theme.get());
+  }
+
+  function updateFallbackImage(currentTheme: string) {
+      if (fallbackImage) {
+          fallbackImage.src = currentTheme === 'dark'
+              ? '/models/fallback-dark.svg'
+              : '/models/fallback-light.svg';
+      }
+  }
+
+  if (force3dBtn) {
+      force3dBtn.addEventListener('click', () => {
+          start(true);
+      });
   }
 
   function triggerResize() {
@@ -747,5 +812,48 @@ const { modelPath = "/models/modernart1-sculpt-1.glb" } = Astro.props;
   z-index: 10; /* Above canvas */
   pointer-events: none;
   transition: color 1s ease, text-shadow 1s ease;
+}
+
+.fallback-container {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    background: transparent;
+    z-index: 5;
+}
+
+.fallback-container.hidden {
+    display: none;
+}
+
+#fallback-image {
+    width: 60%;
+    height: auto;
+    max-width: 600px;
+    opacity: 0.8;
+}
+
+.fallback-controls {
+    margin-top: 2rem;
+    text-align: center;
+}
+
+.force-btn {
+    padding: 10px 20px;
+    background: rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    color: inherit;
+    border-radius: 8px;
+    backdrop-filter: blur(10px);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.force-btn:hover {
+    background: rgba(255, 255, 255, 0.4);
+    transform: scale(1.05);
 }
 </style>
